@@ -97,7 +97,7 @@ function verifyInventory(packed) {
       throw new Error(`tarball is missing ${required}`)
     }
   }
-  if ((files.get('dist/cli.js')?.mode & 0o111) === 0) {
+  if (process.platform !== 'win32' && (files.get('dist/cli.js')?.mode & 0o111) === 0) {
     throw new Error('CLI is not executable')
   }
   if (packed.unpackedSize > 100 * 1024 * 1024) {
