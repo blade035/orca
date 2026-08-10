@@ -1,7 +1,8 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { removeHostTree } from '../../src/main/host-tree-removal'
 import { decodePairingOffer, type PairingOffer } from '../../src/shared/pairing'
 import { sendRemoteRuntimeRequest } from '../../src/shared/remote-runtime-client'
 import type { RuntimeStatus, RuntimeTerminalRead } from '../../src/shared/runtime-types'
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
       await stopServer(activeServer).catch(() => activeServer?.child.kill('SIGKILL'))
     }
     await stopNodeServerVerifierDaemons(dataPath)
-    rmSync(ownedRoot, { force: true, maxRetries: 20, recursive: true, retryDelay: 100 })
+    await removeHostTree(ownedRoot)
   }
 }
 
@@ -151,19 +152,27 @@ async function stopServer(server: RunningServer): Promise<void> {
     throw new Error(`server exited unexpectedly (${child.exitCode})`)
   }
   child.kill('SIGTERM')
-  const result = await Promise.race([
-    new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
-      child.once('exit', (code, signal) => resolveExit({ code, signal }))
-    }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('server did not exit after SIGTERM')), 10_000)
-    )
-  ])
+  const result = await waitForServerExit(child)
   if (result.code !== 0) {
     throw new Error(
       `server shutdown failed (${result.code ?? result.signal}): ${server.stderr.join('')}`
     )
   }
+}
+
+function waitForServerExit(
+  child: ChildProcess
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolveExit, rejectExit) => {
+    const timeout = setTimeout(
+      () => rejectExit(new Error('server did not exit after SIGTERM')),
+      10_000
+    )
+    child.once('exit', (code, signal) => {
+      clearTimeout(timeout)
+      resolveExit({ code, signal })
+    })
+  })
 }
 
 async function verifyWebClient(url: string): Promise<void> {
