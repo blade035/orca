@@ -137,10 +137,8 @@ describe('PR workflow parallelism', () => {
 
     expect(job.strategy.matrix.os).toEqual(['ubuntu-latest', 'windows-2022'])
     expect(
-      job.steps.find((step) => step.uses === './.github/actions/install-node-dependencies').with[
-        'native-runtime'
-      ]
-    ).toBe('node')
+      job.steps.find((step) => step.uses === './.github/actions/install-node-dependencies').with
+    ).toBeUndefined()
     expect(job.steps.find((step) => step.name === 'Build Node server package').run).toBe(
       'pnpm run build:node-server'
     )

@@ -346,8 +346,6 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/install-node-dependencies
-        with:
-          native-runtime: node
 
       - name: Build Node server package
         run: pnpm run build:node-server
