@@ -114,7 +114,7 @@ import { GIT_FETCH_SKIP_AUTO_MAINTENANCE_CONFIG_ARGS } from '../../shared/git-fe
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { resolveWorktreeCreateBase } from '../worktree-create-base'
 import { resolveWorktreeAddBaseRef } from '../../shared/worktree-base-ref'
 import { OrchestrationDb } from './orchestration/db'
@@ -924,11 +924,16 @@ import {
   configureCreatedWorktreePushTarget,
   prepareWorktreePushTarget
 } from '../ipc/worktree-remote'
+import { cleanupUnusedWorktreePushTargetRemoteWithExec } from '../ipc/worktree-push-target-cleanup'
 import {
   getBranchNameOverrideCandidate,
   getWorktreeCreateCandidate,
   WORKTREE_CREATE_MAX_SUFFIX_ATTEMPTS
 } from '../worktree-create-candidates'
+import {
+  createWorktreeRollbackSignal,
+  WorktreeCreateCancellation
+} from '../worktree-create-cancellation'
 import { normalizeSparseDirectories } from '../ipc/sparse-checkout-directories'
 import type { PtyBindingSourceExpectation, Store } from '../persistence'
 import type { StatsCollector } from '../stats/collector'
@@ -948,7 +953,10 @@ import {
   shouldSetDisplayName,
   areWorktreePathsEqual
 } from '../ipc/worktree-logic'
-import { findCreatedWorktree } from '../ipc/created-worktree-reconciliation'
+import {
+  findCreatedWorktree,
+  findCreatedWorktreeForRollback
+} from '../ipc/created-worktree-reconciliation'
 import { worktreePathComparisonKey } from '../ipc/worktree-path-comparison'
 import {
   assertWorktreeDoesNotContainRegisteredWorktree,
@@ -1789,6 +1797,50 @@ type WorktreeStartupDraftPaste = {
   content: string
 }
 
+type ManagedWorktreeCreateArgs = {
+  repoSelector: string
+  name: string
+  baseBranch?: string
+  compareBaseRef?: string
+  branchNameOverride?: string
+  linkedIssue?: number | null
+  linkedPR?: number | null
+  linkedLinearIssue?: string
+  linkedLinearIssueWorkspaceId?: string | null
+  linkedLinearIssueOrganizationUrlKey?: string | null
+  linkedGitLabMR?: number | null
+  linkedGitLabIssue?: number | null
+  linkedBitbucketPR?: number | null
+  linkedAzureDevOpsPR?: number | null
+  linkedGiteaPR?: number | null
+  linkedWorkItem?: WorkspaceLinkedItem | null
+  linkedTaskSourceContext?: TaskSourceContext | null
+  comment?: string
+  displayName?: string
+  telemetrySource?: WorkspaceCreateTelemetrySource
+  workspaceStatus?: string
+  manualOrder?: number
+  sparseCheckout?: { directories: string[]; presetId?: string }
+  pushTarget?: GitPushTarget
+  runHooks?: boolean
+  activate?: boolean
+  setupDecision?: 'run' | 'skip' | 'inherit'
+  awaitTerminalProvisioning?: boolean
+  observeSetupCompletion?: boolean
+  createdWithAgent?: TuiAgent
+  startupAgent?: TuiAgent
+  startupLaunchPreferences?: AgentLaunchPreferences
+  startupPrompt?: string
+  pendingFirstAgentMessageRename?: boolean
+  automationProvenance?: AutomationWorkspaceProvenance
+  cliProvenance?: CliWorkspaceProvenance
+  startup?: WorktreeStartupLaunch
+  startupDraft?: string
+  startupDraftPaste?: WorktreeStartupDraftPaste
+  lineage?: WorktreeLineageInput
+  signal?: AbortSignal
+}
+
 type WorktreeStartupFollowup = {
   expectedProcess: string
   prompt: string
@@ -2157,12 +2209,13 @@ type PreservedBranchCleanupTarget = {
 function getRuntimeWorktreeRemovalOptionsKey(
   force: boolean,
   runHooks: boolean,
-  allowUnverifiedPtyStop: boolean
+  allowUnverifiedPtyStop: boolean,
+  expectedInstanceId?: string
 ): string {
   // Why: a forced retry must not coalesce onto the in-flight attempt that just
   // failed the PTY gate — it would inherit that failure instead of retrying.
   const ptyKey = allowUnverifiedPtyStop ? 'allow-unverified-pty' : 'require-pty-stop'
-  return `${force ? 'force' : 'normal'}:${runHooks ? 'run-hooks' : 'skip-hooks'}:${ptyKey}`
+  return `${force ? 'force' : 'normal'}:${runHooks ? 'run-hooks' : 'skip-hooks'}:${ptyKey}:${expectedInstanceId ?? 'any-instance'}`
 }
 
 // Null executionHostId means host-unaware: path-only callers match any repo, and the first runtime
@@ -21551,7 +21604,8 @@ export class OrcaRuntimeService {
     worktreeSelector: string,
     worktreeId: string,
     defaultTabs: CreateWorktreeResult['defaultTabs'] | undefined,
-    surfacing: { surfaceOwner?: false } = {}
+    surfacing: { surfaceOwner?: false } = {},
+    signal?: AbortSignal
   ): Promise<string[]> {
     if (!defaultTabs || defaultTabs.tabs.length === 0 || !this.ptyController?.spawn) {
       return []
@@ -21563,6 +21617,7 @@ export class OrcaRuntimeService {
         const terminal = await this.createTerminal(worktreeSelector, {
           ...(template.title ? { title: template.title } : {}),
           ...(command && defaultTabs.runCommands ? { command } : {}),
+          signal,
           ...surfacing
         })
         handles.push(terminal.handle)
@@ -21573,6 +21628,9 @@ export class OrcaRuntimeService {
           })
         }
       } catch (error) {
+        if (signal?.aborted) {
+          throw error
+        }
         console.warn(`[worktree-create] Failed to create default tab for ${worktreeId}:`, error)
       }
     }
@@ -21589,6 +21647,7 @@ export class OrcaRuntimeService {
     hasStartupTerminal: boolean
     setupCommandPlatform: 'windows' | 'posix'
     observeSetupCompletion?: boolean
+    signal?: AbortSignal
     // Why: when the agent startup is sequenced to wait for setup
     // (waitForAgentStartup), the startup PTY runs a wrapper that already embeds
     // the setup command. Pass that wrapped command through so the Setup tab runs
@@ -21609,7 +21668,8 @@ export class OrcaRuntimeService {
         args.worktreeSelector,
         args.worktreeId,
         args.defaultTabs,
-        surfacing
+        surfacing,
+        args.signal
       )
       let primaryTerminalHandle = args.primaryTerminalHandle ?? defaultTabHandles[0] ?? null
       const setupLaunchMode =
@@ -21619,7 +21679,10 @@ export class OrcaRuntimeService {
           >
         ).setupScriptLaunchMode ?? 'new-tab'
       if (!args.hasStartupTerminal && !primaryTerminalHandle) {
-        const terminal = await this.createTerminal(args.worktreeSelector, surfacing)
+        const terminal = await this.createTerminal(args.worktreeSelector, {
+          ...surfacing,
+          signal: args.signal
+        })
         primaryTerminalHandle = terminal.handle
       }
       if (args.setup) {
@@ -21651,12 +21714,14 @@ export class OrcaRuntimeService {
               command: setupCommand,
               env: setupEnv,
               activate: false,
+              signal: args.signal,
               ...surfacing
             })
           : this.createTerminal(args.worktreeSelector, {
               title: 'Setup',
               command: setupCommand,
               env: setupEnv,
+              signal: args.signal,
               ...surfacing
             }))
         setupTerminalHandle = setupTerminal.handle
@@ -21667,6 +21732,9 @@ export class OrcaRuntimeService {
         }
       }
     } catch (err) {
+      if (args.signal?.aborted) {
+        throw err
+      }
       const message = err instanceof Error ? err.message : String(err)
       console.warn(
         `[worktree-create] Failed to create setup/default terminals for ${args.worktreePath}: ${message}`
@@ -21780,54 +21848,23 @@ export class OrcaRuntimeService {
     })
   }
 
-  async createManagedWorktree(args: {
-    repoSelector: string
-    name: string
-    baseBranch?: string
-    compareBaseRef?: string
-    branchNameOverride?: string
-    linkedIssue?: number | null
-    linkedPR?: number | null
-    linkedLinearIssue?: string
-    linkedLinearIssueWorkspaceId?: string | null
-    linkedLinearIssueOrganizationUrlKey?: string | null
-    linkedGitLabMR?: number | null
-    linkedGitLabIssue?: number | null
-    linkedBitbucketPR?: number | null
-    linkedAzureDevOpsPR?: number | null
-    linkedGiteaPR?: number | null
-    linkedWorkItem?: WorkspaceLinkedItem | null
-    linkedTaskSourceContext?: TaskSourceContext | null
-    comment?: string
-    displayName?: string
-    telemetrySource?: WorkspaceCreateTelemetrySource
-    workspaceStatus?: string
-    manualOrder?: number
-    sparseCheckout?: { directories: string[]; presetId?: string }
-    pushTarget?: GitPushTarget
-    runHooks?: boolean
-    activate?: boolean
-    setupDecision?: 'run' | 'skip' | 'inherit'
-    awaitTerminalProvisioning?: boolean
-    observeSetupCompletion?: boolean
-    createdWithAgent?: TuiAgent
-    startupAgent?: TuiAgent
-    startupLaunchPreferences?: AgentLaunchPreferences
-    startupPrompt?: string
-    pendingFirstAgentMessageRename?: boolean
-    automationProvenance?: AutomationWorkspaceProvenance
-    cliProvenance?: CliWorkspaceProvenance
-    creatorProvenance?: Worktree['creatorProvenance']
-    startup?: WorktreeStartupLaunch
-    startupDraft?: string
-    startupDraftPaste?: WorktreeStartupDraftPaste
-    lineage?: WorktreeLineageInput
-  }): Promise<CreateWorktreeResult> {
+  createManagedWorktree(args: ManagedWorktreeCreateArgs): Promise<CreateWorktreeResult> {
+    const cancellation = new WorktreeCreateCancellation(args.signal)
+    return cancellation.run(() => this.createManagedWorktreeOperation(args, cancellation))
+  }
+
+  private async createManagedWorktreeOperation(
+    args: ManagedWorktreeCreateArgs,
+    cancellation: WorktreeCreateCancellation
+  ): Promise<CreateWorktreeResult> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
     }
+    const runtimeStore = this.store
 
+    args.signal?.throwIfAborted()
     const repo = await this.resolveRepoSelector(args.repoSelector)
+    args.signal?.throwIfAborted()
     const createSettings = this.store.getSettings()
     const requestedAgent = args.startupAgent ?? args.createdWithAgent
     const requestedAgentEnabled =
@@ -21870,6 +21907,13 @@ export class OrcaRuntimeService {
       const settings = createSettings
       const instanceId = randomUUID()
       const worktreeId = getRuntimeFolderWorkspaceInstanceId(repo, instanceId)
+      let metadataCreated = false
+      cancellation.registerRollback(async () => {
+        if (metadataCreated) {
+          await this.removeManagedWorktree(`id:${worktreeId}`, true, false, true)
+        }
+      })
+      args.signal?.throwIfAborted()
       const meta = this.store.setWorktreeMeta(worktreeId, {
         instanceId,
         ...getProjectHostSetupWorktreeMeta(this.store.getProjectHostSetups?.() ?? [], repo),
@@ -21916,6 +21960,7 @@ export class OrcaRuntimeService {
         ...(args.manualOrder !== undefined ? { manualOrder: args.manualOrder } : {}),
         ...(args.workspaceStatus !== undefined ? { workspaceStatus: args.workspaceStatus } : {})
       })
+      metadataCreated = true
       const worktree = mergeRuntimeFolderWorkspace(repo, worktreeId, meta)
       this.invalidateResolvedWorktreeCache()
       this.notifyWorktreesChanged(repo.id)
@@ -21945,8 +21990,10 @@ export class OrcaRuntimeService {
             ...(effectiveStartup.viewMode ? { viewMode: effectiveStartup.viewMode } : {}),
             startupCommandDelivery: effectiveStartup.startupCommandDelivery,
             telemetry: effectiveStartup.telemetry,
+            signal: args.signal,
             ...ownerSurfacing(shouldActivate)
           })
+          args.signal?.throwIfAborted()
           if (effectiveDraftPaste) {
             this.pasteStartupDraftWhenReady(terminal.handle, effectiveDraftPaste)
           }
@@ -21963,6 +22010,9 @@ export class OrcaRuntimeService {
             surface: 'background'
           }
         } catch (err) {
+          if (args.signal?.aborted) {
+            throw err
+          }
           const message = err instanceof Error ? err.message : String(err)
           warning = `Failed to create the startup terminal for ${worktree.path}: ${message}`
           console.warn(`[worktree-create] ${warning}`)
@@ -21976,8 +22026,14 @@ export class OrcaRuntimeService {
         }
       } else if (this.ptyController?.spawn && !didSpawnStartup) {
         try {
-          await this.createTerminal(`id:${worktree.id}`, { surfaceOwner: false })
+          await this.createTerminal(`id:${worktree.id}`, {
+            surfaceOwner: false,
+            signal: args.signal
+          })
         } catch (err) {
+          if (args.signal?.aborted) {
+            throw err
+          }
           const message = err instanceof Error ? err.message : String(err)
           warning = warning
             ? `${warning} Also failed to create the initial terminal for ${worktree.path}: ${message}`
@@ -21985,6 +22041,7 @@ export class OrcaRuntimeService {
           console.warn(`[worktree-create] ${warning}`)
         }
       }
+      args.signal?.throwIfAborted()
       return {
         worktree: {
           ...worktree,
@@ -22007,15 +22064,21 @@ export class OrcaRuntimeService {
       args.lineage || args.comment ? { ...args.lineage, comment: args.comment } : undefined
     const lineageResolution = await this.resolveLineageForWorktreeCreate(lineageInput)
     if (repo.connectionId) {
-      const result = await this.createManagedRemoteWorktree(repo, {
-        ...args,
-        activate: args.activate,
-        ...(effectiveStartup ? { startup: effectiveStartup } : {}),
-        ...(effectiveStartupFollowup ? { startupFollowup: effectiveStartupFollowup } : {}),
-        ...(effectiveCreatedWithAgent ? { createdWithAgent: effectiveCreatedWithAgent } : {}),
-        ...(effectiveDraftPaste ? { startupDraftPaste: effectiveDraftPaste } : {})
-      })
+      const result = await this.createManagedRemoteWorktree(
+        repo,
+        {
+          ...args,
+          activate: args.activate,
+          ...(effectiveStartup ? { startup: effectiveStartup } : {}),
+          ...(effectiveStartupFollowup ? { startupFollowup: effectiveStartupFollowup } : {}),
+          ...(effectiveCreatedWithAgent ? { createdWithAgent: effectiveCreatedWithAgent } : {}),
+          ...(effectiveDraftPaste ? { startupDraftPaste: effectiveDraftPaste } : {})
+        },
+        cancellation
+      )
+      args.signal?.throwIfAborted()
       const recordedLineage = this.recordCreatedWorktreeLineage(result.worktree, lineageResolution)
+      args.signal?.throwIfAborted()
       this.emitWorktreeLifecycle({
         kind: 'created',
         worktreeId: result.worktree.id,
@@ -22042,10 +22105,16 @@ export class OrcaRuntimeService {
     }
     const settings = createSettings
     const worktreePathSettings = getWorktreePathSettings(repo, settings)
-    const localGitExecOptions = getLocalProjectGitExecOptions(this.requireStore(), repo)
-    const localWorktreeGitOptions = getLocalProjectWorktreeGitOptions(this.requireStore(), repo)
+    const localGitExecOptions = {
+      ...getLocalProjectGitExecOptions(this.requireStore(), repo),
+      ...(args.signal ? { signal: args.signal } : {})
+    }
+    const localWorktreeGitOptions: AddWorktreeOptions = {
+      ...getLocalProjectWorktreeGitOptions(this.requireStore(), repo),
+      ...(args.signal ? { signal: args.signal } : {})
+    }
     const hasLocalWorktreeGitOptions = hasLocalGitOptions(localWorktreeGitOptions)
-    const localWorktreeGitOptionArgs: [] | [{ wslDistro?: string }] = hasLocalWorktreeGitOptions
+    const localWorktreeGitOptionArgs: [] | [AddWorktreeOptions] = hasLocalWorktreeGitOptions
       ? [localWorktreeGitOptions]
       : []
     const addProjectGitOptions = (options?: AddWorktreeOptions): AddWorktreeOptions | undefined => {
@@ -22303,20 +22372,6 @@ export class OrcaRuntimeService {
       throw new Error('Sparse checkout requires at least one repo-relative directory.')
     }
 
-    let preparedPushTarget: GitPushTarget | undefined
-    if (args.pushTarget) {
-      // Why: fork-PR worktrees created through a remote runtime need the same
-      // upstream target setup as local desktop creates, or Push would publish
-      // to the wrong remote after the client/server split.
-      preparedPushTarget = await prepareWorktreePushTarget(
-        repo.path,
-        args.pushTarget,
-        this.store,
-        repo.id,
-        localWorktreeGitOptions
-      )
-    }
-
     const suggestLocalBaseRefUpdate =
       !settings.refreshLocalBaseRefOnWorktreeCreate &&
       !settings.localBaseRefSuggestionDismissed &&
@@ -22328,6 +22383,103 @@ export class OrcaRuntimeService {
       ...(suggestLocalBaseRefUpdate ? { suggestLocalBaseRefUpdate } : {})
     }
     const defaultAddWorktreeOption = addProjectGitOptions()
+    let localWorktreeAddStarted = false
+    let rollbackWorktreeId: string | null = null
+    let rollbackInstanceId: string | null = null
+    let createdPushTargetRemote: GitPushTarget | null = null
+    const createdWorktreeId = `${repo.id}::${worktreePath}`
+    const cleanupCreatedPushTargetRemote = async (signal: AbortSignal): Promise<void> => {
+      if (!createdPushTargetRemote) {
+        return
+      }
+      await cleanupUnusedWorktreePushTargetRemoteWithExec(
+        repo.path,
+        createdWorktreeId,
+        createdPushTargetRemote,
+        runtimeStore,
+        (gitArgs, cwd) => gitExecFileAsync(gitArgs, { cwd, ...localWorktreeGitOptions, signal })
+      )
+      createdPushTargetRemote = null
+    }
+    const rollbackLocalCreate = async (): Promise<void> => {
+      const rollbackSignal = createWorktreeRollbackSignal()
+      if (rollbackWorktreeId) {
+        if (
+          !rollbackInstanceId ||
+          this.store?.getWorktreeMeta(rollbackWorktreeId)?.instanceId !== rollbackInstanceId
+        ) {
+          return
+        }
+        await this.removeManagedWorktree(
+          `id:${rollbackWorktreeId}`,
+          true,
+          false,
+          true,
+          undefined,
+          rollbackInstanceId
+        )
+        await cleanupCreatedPushTargetRemote(rollbackSignal)
+        return
+      }
+      if (!localWorktreeAddStarted) {
+        await cleanupCreatedPushTargetRemote(rollbackSignal)
+        return
+      }
+      const rollbackGitOptions = {
+        ...localWorktreeGitOptions,
+        signal: rollbackSignal
+      }
+      const registeredWorktrees = await listWorktreesStrict(repo.path, rollbackGitOptions)
+      const resolvedWorktreePath = await realpath(worktreePath).catch(() => undefined)
+      const registeredWorktree = findCreatedWorktreeForRollback(
+        registeredWorktrees,
+        worktreePath,
+        branchName,
+        resolvedWorktreePath
+      )
+      if (!registeredWorktree) {
+        if (
+          registeredWorktrees.some((worktree) => worktree.branch === `refs/heads/${branchName}`)
+        ) {
+          throw new Error(`Could not prove ownership of the cancelled worktree at ${worktreePath}.`)
+        }
+        await cleanupCreatedPushTargetRemote(rollbackSignal)
+        return
+      }
+      await removeWorktree(repo.path, registeredWorktree.path, true, {
+        ...rollbackGitOptions,
+        knownRemovedWorktree: registeredWorktree,
+        deleteBranch: !checkoutExistingBranch,
+        forceBranchDelete: !checkoutExistingBranch
+      })
+      await cleanupCreatedPushTargetRemote(rollbackSignal)
+    }
+    cancellation.registerRollback(rollbackLocalCreate, { onFailure: args.pushTarget !== undefined })
+
+    let preparedPushTarget: GitPushTarget | undefined
+    if (args.pushTarget) {
+      // Why: fork-PR worktrees created through a remote runtime need the same
+      // upstream target setup as local desktop creates, or Push would publish
+      // to the wrong remote after the client/server split.
+      preparedPushTarget = await prepareWorktreePushTarget(
+        repo.path,
+        args.pushTarget,
+        runtimeStore,
+        repo.id,
+        localWorktreeGitOptions,
+        {
+          createdWorktreeId,
+          onRemoteCreated: (createdTarget) => {
+            createdPushTargetRemote = createdTarget
+          },
+          onRemoteLifecycleAcquired: (release) => {
+            cancellation.registerRelease(release)
+          }
+        }
+      )
+    }
+
+    localWorktreeAddStarted = true
     const addResult: AddWorktreeResult =
       (await (sparseDirectories.length > 0
         ? checkoutExistingBranch
@@ -22425,6 +22577,7 @@ export class OrcaRuntimeService {
                     baseBranch,
                     settings.refreshLocalBaseRefOnWorktreeCreate
                   ))) ?? {}
+    args.signal?.throwIfAborted()
 
     let configuredPushTarget: GitPushTarget | undefined
     if (preparedPushTarget) {
@@ -22435,10 +22588,12 @@ export class OrcaRuntimeService {
         localWorktreeGitOptions
       )
     }
+    args.signal?.throwIfAborted()
 
     const gitWorktrees = hasLocalWorktreeGitOptions
       ? await listWorktrees(repo.path, localWorktreeGitOptions)
       : await listWorktrees(repo.path)
+    args.signal?.throwIfAborted()
     // Why: Git may canonicalize a symlinked create path; its exact branch identifies the listed row.
     const created = findCreatedWorktree(gitWorktrees, worktreePath, branchName)
     if (!created) {
@@ -22446,6 +22601,7 @@ export class OrcaRuntimeService {
     }
 
     const worktreeId = `${repo.id}::${created.path}`
+    rollbackWorktreeId = worktreeId
     const now = Date.now()
     // Why: PR/MR-created worktrees can start from a head ref/SHA while Source
     // Control must compare against the review target branch.
@@ -22518,6 +22674,8 @@ export class OrcaRuntimeService {
       ...(args.manualOrder !== undefined ? { manualOrder: args.manualOrder } : {}),
       ...(args.workspaceStatus !== undefined ? { workspaceStatus: args.workspaceStatus } : {})
     })
+    rollbackInstanceId = meta.instanceId ?? null
+    cancellation.disableRollbackOnFailure()
     const worktree = {
       ...mergeWorktree(repo.id, created, meta),
       hostId: meta.hostId ?? getRepoExecutionHostId(repo)
@@ -22527,10 +22685,12 @@ export class OrcaRuntimeService {
       workspaceLineage,
       warnings: lineageWarnings
     } = this.recordCreatedWorktreeLineage(worktree, lineageResolution)
+    args.signal?.throwIfAborted()
 
     const symlinkPaths = repo.symlinkPaths ?? []
     if (symlinkPaths.length > 0) {
       await createWorktreeLinkedPaths(repo.path, created.path, symlinkPaths)
+      args.signal?.throwIfAborted()
     }
 
     // Why: project-level `orca.yaml` shared directories add to (never replace) the
@@ -22541,6 +22701,7 @@ export class OrcaRuntimeService {
     )
     if (sharedDirectories.length > 0) {
       await createWorktreeSharedPaths(repo.path, created.path, sharedDirectories)
+      args.signal?.throwIfAborted()
     }
 
     // Why: project-level `.worktreeinclude` travels with the repo (issue #7549); copy semantics
@@ -22560,6 +22721,7 @@ export class OrcaRuntimeService {
       if (includeCopyWarning) {
         console.warn(`[worktree-include] ${includeCopyWarning}`)
       }
+      args.signal?.throwIfAborted()
     }
 
     let setup: CreateWorktreeResult['setup']
@@ -22699,8 +22861,10 @@ export class OrcaRuntimeService {
           ...(sequencedStartup.viewMode ? { viewMode: sequencedStartup.viewMode } : {}),
           startupCommandDelivery: sequencedStartup.startupCommandDelivery,
           telemetry: sequencedStartup.telemetry,
+          signal: args.signal,
           ...ownerSurfacing(shouldActivate)
         })
+        args.signal?.throwIfAborted()
         if (effectiveDraftPaste) {
           this.pasteStartupDraftWhenReady(terminal.handle, effectiveDraftPaste)
         }
@@ -22713,6 +22877,9 @@ export class OrcaRuntimeService {
         startupTerminalPaneKey = terminal.paneKey ?? null
         startupTerminalPtyId = terminal.ptyId ?? null
       } catch (err) {
+        if (args.signal?.aborted) {
+          throw err
+        }
         const message = err instanceof Error ? err.message : String(err)
         warning = warning
           ? `${warning} Also failed to create the startup terminal for ${worktreePath}: ${message}`
@@ -22741,6 +22908,7 @@ export class OrcaRuntimeService {
           hasStartupTerminal: didSpawnStartup,
           setupCommandPlatform: getSetupRunnerCommandPlatformForLaunch(setup, 'posix'),
           observeSetupCompletion: args.observeSetupCompletion,
+          signal: args.signal,
           // Why: carry the wait-for-agent wrapped setup command (#6298) so the
           // Setup tab runs the same script the sequenced agent waits on.
           ...(wrappedSetupCommandStr ? { wrappedSetupCommand: wrappedSetupCommandStr } : {})
@@ -22792,12 +22960,13 @@ export class OrcaRuntimeService {
         hasStartupTerminal: didSpawnStartup,
         setupCommandPlatform: getSetupRunnerCommandPlatformForLaunch(setup, 'posix'),
         observeSetupCompletion: args.observeSetupCompletion,
+        signal: args.signal,
         ...(wrappedSetupCommandStr ? { wrappedSetupCommand: wrappedSetupCommandStr } : {}),
         surfaceOwner: false
       })
       // Why: runtime owns setup spawning here, so the RPC result must omit setup
       // to keep the headless/mobile caller from launching it a second time.
-      if (args.awaitTerminalProvisioning) {
+      if (args.awaitTerminalProvisioning || args.signal) {
         const provisioned = await provisioning
         didSpawnSetup = provisioned.setupSpawned
         setupTerminalHandle = provisioned.setupTerminalHandle
@@ -22809,8 +22978,14 @@ export class OrcaRuntimeService {
       }
     } else if (this.ptyController?.spawn) {
       try {
-        await this.createTerminal(`id:${worktree.id}`, { surfaceOwner: false })
+        await this.createTerminal(`id:${worktree.id}`, {
+          surfaceOwner: false,
+          signal: args.signal
+        })
       } catch (err) {
+        if (args.signal?.aborted) {
+          throw err
+        }
         const message = err instanceof Error ? err.message : String(err)
         warning = warning
           ? `${warning} Also failed to create the initial terminal for ${worktreePath}: ${message}`
@@ -22828,6 +23003,7 @@ export class OrcaRuntimeService {
               : {})
           }
         : undefined
+    args.signal?.throwIfAborted()
     this.emitWorktreeLifecycle({
       kind: 'created',
       worktreeId: worktree.id,
@@ -22926,7 +23102,9 @@ export class OrcaRuntimeService {
       startup?: WorktreeStartupLaunch
       startupFollowup?: WorktreeStartupFollowup
       startupDraftPaste?: WorktreeStartupDraftPaste
-    }
+      signal?: AbortSignal
+    },
+    cancellation: WorktreeCreateCancellation
   ): Promise<CreateWorktreeResult> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
@@ -22983,9 +23161,28 @@ export class OrcaRuntimeService {
       },
       repo,
       this.store as unknown as Store,
-      headlessWindow
+      headlessWindow,
+      { signal: args.signal }
     )
+    const rollbackInstanceId = result.worktree.instanceId
+    cancellation.registerRollback(async () => {
+      if (
+        !rollbackInstanceId ||
+        this.store?.getWorktreeMeta(result.worktree.id)?.instanceId !== rollbackInstanceId
+      ) {
+        return
+      }
+      await this.removeManagedWorktree(
+        `id:${result.worktree.id}`,
+        true,
+        false,
+        true,
+        undefined,
+        rollbackInstanceId
+      )
+    })
 
+    args.signal?.throwIfAborted()
     if (args.comment !== undefined) {
       this.store.setWorktreeMeta(result.worktree.id, { comment: args.comment })
       result.worktree.comment = args.comment
@@ -23046,8 +23243,10 @@ export class OrcaRuntimeService {
           ...(sequencedStartup.viewMode ? { viewMode: sequencedStartup.viewMode } : {}),
           startupCommandDelivery: sequencedStartup.startupCommandDelivery,
           telemetry: sequencedStartup.telemetry,
+          signal: args.signal,
           ...ownerSurfacing(shouldActivate)
         })
+        args.signal?.throwIfAborted()
         if (args.startupDraftPaste) {
           this.pasteStartupDraftWhenReady(terminal.handle, args.startupDraftPaste)
         }
@@ -23060,6 +23259,9 @@ export class OrcaRuntimeService {
         startupTerminalPaneKey = terminal.paneKey ?? null
         startupTerminalPtyId = terminal.ptyId ?? null
       } catch (err) {
+        if (args.signal?.aborted) {
+          throw err
+        }
         const message = err instanceof Error ? err.message : String(err)
         warning = warning
           ? `${warning} Also failed to create the startup terminal for ${result.worktree.path}: ${message}`
@@ -23084,6 +23286,7 @@ export class OrcaRuntimeService {
           hasStartupTerminal: didSpawnStartup,
           setupCommandPlatform: getSetupRunnerCommandPlatformForLaunch(result.setup, 'posix'),
           observeSetupCompletion: args.observeSetupCompletion,
+          signal: args.signal,
           // Why: carry the wait-for-agent wrapped setup command (#6298) so the
           // remote Setup tab runs the same script the sequenced agent waits on.
           ...(wrappedSetupCommandStr ? { wrappedSetupCommand: wrappedSetupCommandStr } : {})
@@ -23140,12 +23343,13 @@ export class OrcaRuntimeService {
         hasStartupTerminal: didSpawnStartup,
         setupCommandPlatform: getSetupRunnerCommandPlatformForLaunch(result.setup, 'posix'),
         observeSetupCompletion: args.observeSetupCompletion,
+        signal: args.signal,
         ...(wrappedSetupCommandStr ? { wrappedSetupCommand: wrappedSetupCommandStr } : {}),
         surfaceOwner: false
       })
       // Why: runtime owns setup spawning here, so omit setup from the RPC result
       // to keep the headless/mobile caller from launching it a second time.
-      if (args.awaitTerminalProvisioning) {
+      if (args.awaitTerminalProvisioning || args.signal) {
         const provisioned = await provisioning
         didSpawnSetup = provisioned.setupSpawned
         setupTerminalHandle = provisioned.setupTerminalHandle
@@ -23157,8 +23361,14 @@ export class OrcaRuntimeService {
       }
     } else if (!shouldActivate && this.ptyController?.spawn) {
       try {
-        await this.createTerminal(`path:${result.worktree.path}`, { surfaceOwner: false })
+        await this.createTerminal(`path:${result.worktree.path}`, {
+          surfaceOwner: false,
+          signal: args.signal
+        })
       } catch (err) {
+        if (args.signal?.aborted) {
+          throw err
+        }
         const message = err instanceof Error ? err.message : String(err)
         warning = warning
           ? `${warning} Also failed to create the initial terminal for ${result.worktree.path}: ${message}`
@@ -23218,6 +23428,7 @@ export class OrcaRuntimeService {
     const resultWithSetupReceipt = args.awaitTerminalProvisioning
       ? { ...resultWithStartupTerminal, setupReceipt }
       : resultWithStartupTerminal
+    args.signal?.throwIfAborted()
     return warning ? { ...resultWithSetupReceipt, warning } : resultWithSetupReceipt
   }
 
@@ -24366,7 +24577,8 @@ export class OrcaRuntimeService {
     // Why (#11960): only an explicit Force Delete waives PTY-stop proof; `force`
     // alone is already set by the ordinary delete confirmation.
     allowUnverifiedPtyStop = false,
-    hostId?: string
+    hostId?: string,
+    expectedInstanceId?: string
   ): Promise<RemoveWorktreeResult & { warning?: string }> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
@@ -24378,7 +24590,21 @@ export class OrcaRuntimeService {
       worktreeId: removalTarget.id,
       hostId: cleanupHostId
     })
-    const optionsKey = getRuntimeWorktreeRemovalOptionsKey(force, runHooks, allowUnverifiedPtyStop)
+    const assertExpectedInstance = (): void => {
+      if (
+        expectedInstanceId &&
+        store.getWorktreeMeta(removalTarget.id)?.instanceId !== expectedInstanceId
+      ) {
+        throw new Error(`Worktree identity changed during deletion: ${removalTarget.path}.`)
+      }
+    }
+    assertExpectedInstance()
+    const optionsKey = getRuntimeWorktreeRemovalOptionsKey(
+      force,
+      runHooks,
+      allowUnverifiedPtyStop,
+      expectedInstanceId
+    )
     const inFlightRemoval = this.removeManagedWorktreeInFlight.get(removalTarget.id)
     if (inFlightRemoval) {
       if (inFlightRemoval.optionsKey === optionsKey) {
@@ -24393,6 +24619,7 @@ export class OrcaRuntimeService {
       // Why: CLI, mobile and headless serve delete through here rather than the IPC handler; without
       // this span their freezes are as invisible as desktop deletes were before `worktree.remove`.
       return withWorktreeSpan({ stage: 'remove', path: removalTarget.path }, async () => {
+        assertExpectedInstance()
         const repo = store.getRepo(removalTarget.repoId)
         if (!repo) {
           const orphanHost = parseExecutionHostId(store.getWorktreeMeta(removalTarget.id)?.hostId)
@@ -24440,6 +24667,7 @@ export class OrcaRuntimeService {
               .catch(() => {})
           }
           this.clearOptimisticReconcileToken(removalTarget.id)
+          assertExpectedInstance()
           this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
           this.preservedBranchCleanupByScope.delete(cleanupScopeKey)
           this.invalidateResolvedWorktreeCache()
@@ -24483,6 +24711,7 @@ export class OrcaRuntimeService {
               console.warn(`[worktree-teardown] failed for ${removalTarget.id}:`, err)
             })
           }
+          assertExpectedInstance()
           this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
           this.preservedBranchCleanupByScope.delete(cleanupScopeKey)
           this.invalidateResolvedWorktreeCache()
@@ -24500,6 +24729,7 @@ export class OrcaRuntimeService {
           : hasLocalWorktreeGitOptions
             ? await listWorktreesStrict(repo.path, localWorktreeGitOptions)
             : await listWorktreesStrict(repo.path)
+        assertExpectedInstance()
         const removedMeta = store.getWorktreeMeta(removalTarget.id)
         const removedPushTarget = removedMeta?.pushTarget ?? removalTarget.pushTarget
         const registeredWorktree = findRegisteredDeletableWorktree(
@@ -24540,6 +24770,7 @@ export class OrcaRuntimeService {
             }
           }
           if (canCleanOrphanedDirectory) {
+            assertExpectedInstance()
             assertWorktreeDoesNotContainRegisteredWorktree(removalTarget.path, registeredWorktrees)
             if (!force) {
               throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
@@ -24555,6 +24786,7 @@ export class OrcaRuntimeService {
                   connectionId: repo.connectionId,
                   allowUnverifiedStop: allowUnverifiedPtyStop
                 })
+                assertExpectedInstance()
                 await fsProvider!.deletePath(removalTarget.path, true)
                 removalCompleted = true
               } finally {
@@ -24574,6 +24806,7 @@ export class OrcaRuntimeService {
                 await this.stopPtysForDestructiveWorktreeRemoval(removalTarget.id, {
                   allowUnverifiedStop: allowUnverifiedPtyStop
                 })
+                assertExpectedInstance()
                 await removeLocalWorktreePath(removalTarget.path, localWorktreeGitOptions)
                 removalCompleted = true
               } finally {
@@ -24588,6 +24821,7 @@ export class OrcaRuntimeService {
               )
             }
             this.clearOptimisticReconcileToken(removalTarget.id)
+            assertExpectedInstance()
             this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
             this.preservedBranchCleanupByScope.delete(cleanupScopeKey)
             this.invalidateResolvedWorktreeCache()
@@ -24615,6 +24849,7 @@ export class OrcaRuntimeService {
                   isLocalRuntimeGitRepository(path, localWorktreeGitOptions)
               })
             ) {
+              assertExpectedInstance()
               if (!force) {
                 throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
               }
@@ -24624,6 +24859,7 @@ export class OrcaRuntimeService {
                 await this.stopPtysForDestructiveWorktreeRemoval(removalTarget.id, {
                   allowUnverifiedStop: allowUnverifiedPtyStop
                 })
+                assertExpectedInstance()
                 await removeLocalWorktreePath(removalTarget.path, localWorktreeGitOptions)
                 removalCompleted = true
               } finally {
@@ -24637,6 +24873,7 @@ export class OrcaRuntimeService {
                 localWorktreeGitOptions
               )
               this.clearOptimisticReconcileToken(removalTarget.id)
+              assertExpectedInstance()
               this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
               this.preservedBranchCleanupByScope.delete(cleanupScopeKey)
               this.invalidateResolvedWorktreeCache()
@@ -24649,6 +24886,7 @@ export class OrcaRuntimeService {
           if (
             await isRuntimeWorktreePathMissing(repo, removalTarget.path, localWorktreeGitOptions)
           ) {
+            assertExpectedInstance()
             if (!force && !removedMeta) {
               // Why: without persisted metadata, require the renderer recovery
               // path before deleting Orca-only state for an unregistered path.
@@ -24673,6 +24911,7 @@ export class OrcaRuntimeService {
                   localWorktreeGitOptions
                 ))
             this.clearOptimisticReconcileToken(removalTarget.id)
+            assertExpectedInstance()
             this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
             this.preservedBranchCleanupByScope.delete(cleanupScopeKey)
             this.invalidateResolvedWorktreeCache()
@@ -24705,6 +24944,7 @@ export class OrcaRuntimeService {
           removedMeta &&
           (await isRuntimeWorktreePathMissing(repo, canonicalWorktreePath, localWorktreeGitOptions))
         ) {
+          assertExpectedInstance()
           const removalResult = await removeStaleLocalWorktreeRegistrationAfterFilesystemRemoval({
             canonicalWorktreePath,
             repoPath: repo.path,
@@ -24727,6 +24967,7 @@ export class OrcaRuntimeService {
             removedPushTarget
           )
           this.clearOptimisticReconcileToken(removalTarget.id)
+          assertExpectedInstance()
           this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
           this.invalidateResolvedWorktreeCache()
           this.invalidateWorktreeScanCacheForRepo(removalTarget.repoId)
@@ -24747,6 +24988,7 @@ export class OrcaRuntimeService {
               connectionId: repo.connectionId,
               allowUnverifiedStop: allowUnverifiedPtyStop
             })
+            assertExpectedInstance()
             rawRemovalResult = await (Object.keys(remoteRemoveOptions).length > 0
               ? provider!.removeWorktree(canonicalWorktreePath, force, remoteRemoveOptions)
               : provider!.removeWorktree(canonicalWorktreePath, force))
@@ -24773,6 +25015,7 @@ export class OrcaRuntimeService {
             removedPushTarget
           )
           this.clearOptimisticReconcileToken(removalTarget.id)
+          assertExpectedInstance()
           this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
           this.invalidateResolvedWorktreeCache()
           this.invalidateWorktreeScanCacheForRepo(removalTarget.repoId)
@@ -24811,6 +25054,7 @@ export class OrcaRuntimeService {
           canonicalWorktreePath,
           refreshedWorktrees
         )
+        assertExpectedInstance()
         if (!refreshedRegisteredWorktree) {
           throw new Error(
             `Worktree registration changed during deletion: ${canonicalWorktreePath}. Retry deletion.`
@@ -24861,12 +25105,14 @@ export class OrcaRuntimeService {
           await this.stopPtysForDestructiveWorktreeRemoval(removalTarget.id, {
             allowUnverifiedStop: allowUnverifiedPtyStop
           })
+          assertExpectedInstance()
 
           if (linkedPaths.length > 0) {
             await removeWorktreeLinkedPaths(canonicalWorktreePath, linkedPaths)
           }
 
           try {
+            assertExpectedInstance()
             const removeOptions = {
               ...(!deleteBranch ? { deleteBranch } : {}),
               // Why: removal already validated the Git row under the selected
@@ -24905,6 +25151,7 @@ export class OrcaRuntimeService {
                 )
               ) {
                 await this.closeFileWatchersForRemoval(canonicalWorktreePath)
+                assertExpectedInstance()
                 await removeLocalWorktreePath(canonicalWorktreePath, localWorktreeGitOptions).catch(
                   () => {}
                 )
@@ -24929,6 +25176,7 @@ export class OrcaRuntimeService {
                 localWorktreeGitOptions
               )
               this.clearOptimisticReconcileToken(removalTarget.id)
+              assertExpectedInstance()
               this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
               this.preservedBranchCleanupByScope.delete(cleanupScopeKey)
               this.invalidateResolvedWorktreeCache()
@@ -24963,6 +25211,7 @@ export class OrcaRuntimeService {
           removedPushTarget
         )
         this.clearOptimisticReconcileToken(removalTarget.id)
+        assertExpectedInstance()
         this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
         this.invalidateResolvedWorktreeCache()
         this.invalidateWorktreeScanCacheForRepo(removalTarget.repoId)
@@ -27286,6 +27535,7 @@ export class OrcaRuntimeService {
       // workspace, for splits the user never asked to see.
       surfaceOwner?: false
       telemetrySource?: TerminalPaneSplitSource
+      signal?: AbortSignal
     } = {}
   ): Promise<RuntimeTerminalSplit> {
     const livePty = this.getLivePtyForHandle(handle)
@@ -27326,6 +27576,7 @@ export class OrcaRuntimeService {
       // workspace, for splits the user never asked to see.
       surfaceOwner?: false
       telemetrySource?: TerminalPaneSplitSource
+      signal?: AbortSignal
     } = {}
   ): Promise<RuntimeTerminalSplit> {
     if (!this.ptyController?.spawn) {
@@ -27340,6 +27591,7 @@ export class OrcaRuntimeService {
       throw new Error('terminal_handle_stale')
     }
     const direction = opts.direction ?? 'horizontal'
+    opts.signal?.throwIfAborted()
     const workspace = await this.resolveTerminalWorkspaceLaunchScope(`id:${pty.worktreeId}`)
     const sourceAuthority = this.resolveTerminalSplitSourceAuthority(
       workspace.id,
@@ -27350,6 +27602,7 @@ export class OrcaRuntimeService {
     if (!sourceAuthority) {
       throw new Error('terminal_split_source_not_found')
     }
+    opts.signal?.throwIfAborted()
     const leafId = randomUUID()
     const preAllocatedHandle = this.createPreAllocatedTerminalHandle()
     const paneKey = makePaneKey(parentTabId, leafId)
@@ -27381,8 +27634,13 @@ export class OrcaRuntimeService {
                 : {})
             }
           }
-        : {})
+        : {}),
+      signal: opts.signal
     })
+    if (opts.signal?.aborted) {
+      this.ptyController.kill(result.id)
+      opts.signal.throwIfAborted()
+    }
     this.registerPreAllocatedHandleForPty(result.id, preAllocatedHandle)
     if (result.wslDistro) {
       this.preparePtyExecutionContext(result.id, result.wslDistro)

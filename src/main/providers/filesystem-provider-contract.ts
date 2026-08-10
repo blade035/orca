@@ -18,9 +18,13 @@ export type FileReadResult = {
   mimeType?: string
 }
 
+export type FilesystemMutationOptions = {
+  requireSettlement?: boolean
+}
+
 export type IFilesystemProvider = {
   readDir(dirPath: string): Promise<DirEntry[]>
-  readFile(filePath: string): Promise<FileReadResult>
+  readFile(filePath: string, options?: { signal?: AbortSignal }): Promise<FileReadResult>
   readTerminalArtifact?(
     filePath: string,
     options: TerminalArtifactAccessOptions
@@ -29,7 +33,7 @@ export type IFilesystemProvider = {
   downloadFolder?: (src: string, dest: string, options?: { signal?: AbortSignal }) => Promise<void>
   openFileUploadSession?(): Promise<FileUploadSession>
   getTempDir?(): Promise<string>
-  writeFile(filePath: string, content: string): Promise<void>
+  writeFile(filePath: string, content: string, options?: FilesystemMutationOptions): Promise<void>
   writeTerminalArtifact?(
     filePath: string,
     content: string,
@@ -41,7 +45,7 @@ export type IFilesystemProvider = {
   lstat?(filePath: string): Promise<FileStat>
   deletePath(targetPath: string, recursive?: boolean): Promise<void>
   createFile(filePath: string): Promise<void>
-  createDir(dirPath: string): Promise<void>
+  createDir(dirPath: string, options?: FilesystemMutationOptions): Promise<void>
   createDirNoClobber(dirPath: string): Promise<void>
   rename(oldPath: string, newPath: string): Promise<void>
   renameNoClobber(oldPath: string, newPath: string): Promise<void>

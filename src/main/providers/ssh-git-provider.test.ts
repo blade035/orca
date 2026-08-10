@@ -1565,12 +1565,143 @@ describe('SshGitProvider', () => {
     })
   })
 
+  it('joins remote add cancellation before rejecting', async () => {
+    const add = deferredValue(undefined)
+    const cancel = deferredValue({ cancelled: true })
+    mux.request.mockImplementation((method: string) =>
+      method === 'git.addWorktree' ? add.promise : cancel.promise
+    )
+    const controller = new AbortController()
+    const create = provider.addWorktree('/home/user/repo', 'feature', '/home/user/feat', {
+      base: 'main',
+      signal: controller.signal
+    })
+    let settled = false
+    const settlement = create
+      .then(
+        () => 'fulfilled' as const,
+        (error) => error
+      )
+      .finally(() => {
+        settled = true
+      })
+
+    await waitForRequestCount(mux.request, 1)
+    controller.abort()
+    await waitForRequestCount(mux.request, 2)
+
+    const addParams = mux.request.mock.calls[0][1]
+    expect(addParams).toMatchObject({ operationId: expect.any(String) })
+    expect(addParams).not.toHaveProperty('signal')
+    expect(addParams).not.toHaveProperty('onAddSettled')
+    expect(mux.request).toHaveBeenNthCalledWith(2, 'git.cancelAddWorktree', {
+      operationId: addParams.operationId
+    })
+
+    cancel.resolve()
+    await cancel.promise
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    add.resolve()
+    const error = await settlement
+    expect(error).toMatchObject({ name: 'AbortError' })
+  })
+
+  it('joins the original add when an old relay lacks cancellation', async () => {
+    const add = deferredValue(undefined)
+    const methodNotFound = Object.assign(new Error('Method not found: git.cancelAddWorktree'), {
+      code: -32601
+    })
+    mux.request.mockImplementation((method: string) =>
+      method === 'git.addWorktree' ? add.promise : Promise.reject(methodNotFound)
+    )
+    const controller = new AbortController()
+    const create = provider.addWorktree('/home/user/repo', 'feature', '/home/user/feat', {
+      signal: controller.signal
+    })
+    let settled = false
+    const settlement = create
+      .catch((error) => error)
+      .finally(() => {
+        settled = true
+      })
+
+    await waitForRequestCount(mux.request, 1)
+    controller.abort()
+    await waitForRequestCount(mux.request, 2)
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    add.resolve()
+    await expect(settlement).resolves.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('captures cancellation RPC failures until the original add settles', async () => {
+    const add = deferredValue(undefined)
+    const cancelError = new Error('relay cancellation failed')
+    mux.request.mockImplementation((method: string) =>
+      method === 'git.addWorktree' ? add.promise : Promise.reject(cancelError)
+    )
+    const controller = new AbortController()
+    let settled = false
+    const create = provider
+      .addWorktree('/home/user/repo', 'feature', '/home/user/feat', {
+        signal: controller.signal
+      })
+      .finally(() => {
+        settled = true
+      })
+
+    await waitForRequestCount(mux.request, 1)
+    controller.abort()
+    await waitForRequestCount(mux.request, 2)
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    add.resolve()
+    await expect(create).rejects.toMatchObject({
+      errors: [expect.objectContaining({ name: 'AbortError' }), cancelError]
+    })
+  })
+
+  it('does not dispatch a pre-aborted remote add', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      provider.addWorktree('/home/user/repo', 'feature', '/home/user/feat', {
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(mux.request).not.toHaveBeenCalled()
+  })
+
   it('removeWorktree sends git.removeWorktree request', async () => {
     await provider.removeWorktree('/home/user/feat', true)
     expect(mux.request).toHaveBeenCalledWith('git.removeWorktree', {
       worktreePath: '/home/user/feat',
       force: true
     })
+  })
+
+  it('forwards cancellation to remote worktree removal', async () => {
+    const controller = new AbortController()
+
+    await provider.removeWorktree('/home/user/feat', true, {
+      deleteBranch: true,
+      signal: controller.signal
+    })
+
+    expect(mux.request).toHaveBeenCalledWith(
+      'git.removeWorktree',
+      {
+        worktreePath: '/home/user/feat',
+        force: true,
+        deleteBranch: true
+      },
+      { signal: controller.signal }
+    )
   })
 
   it('worktreeIsClean sends git.worktreeIsClean request', async () => {

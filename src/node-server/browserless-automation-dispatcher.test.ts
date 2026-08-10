@@ -124,12 +124,29 @@ describe('browserless automation dispatcher', () => {
   })
 
   it('joins an in-flight worktree creation before shutdown settles', async () => {
-    let rejectCreate!: (error: Error) => void
-    const create = new Promise<never>((_resolve, reject) => {
-      rejectCreate = reject
+    let finishCleanup!: () => void
+    const cleanup = new Promise<void>((resolve) => {
+      finishCleanup = resolve
+    })
+    let cleanupStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      cleanupStarted = resolve
     })
     const runtime = {
-      createManagedWorktree: vi.fn(() => create),
+      createManagedWorktree: vi.fn(async ({ signal }: { signal?: AbortSignal }): Promise<never> => {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener(
+            'abort',
+            () => {
+              cleanupStarted()
+              resolve()
+            },
+            { once: true }
+          )
+        })
+        await cleanup
+        throw new Error('create cancelled after cleanup')
+      }),
       launchAgentTerminal: vi.fn(),
       showManagedWorktree: vi.fn(),
       waitForTerminal: vi.fn(),
@@ -151,12 +168,15 @@ describe('browserless automation dispatcher', () => {
       settled = true
     })
     expect(runtime.createManagedWorktree).toHaveBeenCalledTimes(1)
+    expect(runtime.createManagedWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal })
+    )
 
     controller.abort()
-    await new Promise<void>((resolve) => setImmediate(resolve))
+    await started
     expect(settled).toBe(false)
 
-    rejectCreate(new Error('late create failure'))
+    finishCleanup()
     await expect(launched).rejects.toThrow('Automation stopped during server shutdown.')
     expect(runtime.launchAgentTerminal).not.toHaveBeenCalled()
     expect(runtime.waitForTerminal).not.toHaveBeenCalled()

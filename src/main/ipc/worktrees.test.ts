@@ -2062,6 +2062,126 @@ describe('registerWorktreeHandlers', () => {
     )
   })
 
+  it('removes the local fork remote after ordinary add failure', async () => {
+    const forkRemoteUrl = 'git@github.com:contributor/orca.git'
+    let configuredForkRemoteUrl: string | null = null
+    let cleanupSignal: AbortSignal | undefined
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '/workspace/repo',
+        head: 'main-sha',
+        branch: 'refs/heads/main',
+        isBare: false,
+        isMainWorktree: true
+      }
+    ])
+    addWorktreeMock.mockRejectedValueOnce(new Error('ordinary local add failed'))
+    gitExecFileAsyncMock.mockImplementation(
+      async (args: string[], options?: { signal?: AbortSignal }) => {
+        if (args[0] === 'remote' && args.length === 1) {
+          return {
+            stdout: configuredForkRemoteUrl ? 'origin\npr-contributor-orca\n' : 'origin\n',
+            stderr: ''
+          }
+        }
+        if (args[0] === 'remote' && args[1] === 'get-url') {
+          if (args[2] === 'origin') {
+            return { stdout: 'git@github.com:orca/orca.git\n', stderr: '' }
+          }
+          if (args[2] === 'pr-contributor-orca' && configuredForkRemoteUrl) {
+            return { stdout: `${configuredForkRemoteUrl}\n`, stderr: '' }
+          }
+          throw new Error('missing remote')
+        }
+        if (args[0] === 'remote' && args[1] === 'add') {
+          configuredForkRemoteUrl = args[3]
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'remote' && args[1] === 'remove') {
+          cleanupSignal = options?.signal
+          configuredForkRemoteUrl = null
+          return { stdout: '', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    await expect(
+      handlers['worktrees:create'](null, {
+        repoId: 'repo-1',
+        name: 'failed-local-fork',
+        pushTarget: {
+          remoteName: 'pr-contributor-orca',
+          branchName: 'contributor/fix',
+          remoteUrl: forkRemoteUrl
+        }
+      })
+    ).rejects.toThrow('ordinary local add failed')
+
+    expect(removeWorktreeMock).not.toHaveBeenCalled()
+    expect(configuredForkRemoteUrl).toBeNull()
+    expect(cleanupSignal).toBeInstanceOf(AbortSignal)
+    expect(store.setWorktreeMeta).not.toHaveBeenCalled()
+    expect(gitExecFileAsyncMock).toHaveBeenCalledWith(
+      ['remote', 'remove', 'pr-contributor-orca'],
+      expect.objectContaining({ cwd: '/workspace/repo', signal: cleanupSignal })
+    )
+  })
+
+  it('removes a local fork remote when add mutates then rejects', async () => {
+    const forkRemoteUrl = 'git@github.com:contributor/orca.git'
+    let configuredForkRemoteUrl: string | null = null
+    let cleanupSignal: AbortSignal | undefined
+    gitExecFileAsyncMock.mockImplementation(
+      async (args: string[], options?: { signal?: AbortSignal }) => {
+        if (args[0] === 'remote' && args.length === 1) {
+          return {
+            stdout: configuredForkRemoteUrl ? 'origin\npr-contributor-orca\n' : 'origin\n',
+            stderr: ''
+          }
+        }
+        if (args[0] === 'remote' && args[1] === 'get-url') {
+          if (args[2] === 'origin') {
+            return { stdout: 'git@github.com:orca/orca.git\n', stderr: '' }
+          }
+          if (args[2] === 'pr-contributor-orca' && configuredForkRemoteUrl) {
+            return { stdout: `${configuredForkRemoteUrl}\n`, stderr: '' }
+          }
+          throw new Error('missing remote')
+        }
+        if (args[0] === 'remote' && args[1] === 'add') {
+          configuredForkRemoteUrl = args[3]
+          throw new Error('remote add acknowledgement lost')
+        }
+        if (args[0] === 'remote' && args[1] === 'remove') {
+          cleanupSignal = options?.signal
+          configuredForkRemoteUrl = null
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    await expect(
+      handlers['worktrees:create'](null, {
+        repoId: 'repo-1',
+        name: 'lost-local-remote-add',
+        pushTarget: {
+          remoteName: 'pr-contributor-orca',
+          branchName: 'contributor/fix',
+          remoteUrl: forkRemoteUrl
+        }
+      })
+    ).rejects.toThrow('remote add acknowledgement lost')
+
+    expect(addWorktreeMock).not.toHaveBeenCalled()
+    expect(configuredForkRemoteUrl).toBeNull()
+    expect(cleanupSignal).toBeInstanceOf(AbortSignal)
+    expect(gitExecFileAsyncMock).toHaveBeenCalledWith(
+      ['remote', 'remove', 'pr-contributor-orca'],
+      expect.objectContaining({ cwd: '/workspace/repo', signal: cleanupSignal })
+    )
+  })
+
   it('keeps the Orca-created marker when a new worktree reuses an Orca-created fork remote', async () => {
     listWorktreesMock.mockResolvedValue([
       {
@@ -5186,11 +5306,13 @@ describe('registerWorktreeHandlers', () => {
       '/remote/repo-improve-dashboard'
     )
     expect(fsProvider.createDir).toHaveBeenCalledWith(
-      '/remote/repo/.git/worktrees/repo-improve-dashboard/orca'
+      '/remote/repo/.git/worktrees/repo-improve-dashboard/orca',
+      { requireSettlement: true }
     )
     expect(fsProvider.writeFile).toHaveBeenCalledWith(
       '/remote/repo/.git/worktrees/repo-improve-dashboard/orca/setup-runner.sh',
-      '#!/usr/bin/env bash\nset -e\npnpm install\n'
+      '#!/usr/bin/env bash\nset -e\npnpm install\n',
+      { requireSettlement: true }
     )
     expect(result).toEqual(
       expect.objectContaining({
@@ -5286,7 +5408,8 @@ describe('registerWorktreeHandlers', () => {
     )
     expect(fsProvider.writeFile).toHaveBeenCalledWith(
       'C:\\remote\\repo\\.git\\worktrees\\improve-dashboard\\orca\\setup-runner.cmd',
-      'pnpm install'
+      'pnpm install',
+      { requireSettlement: true }
     )
     expect(resolveSetupRunnerShellMock).not.toHaveBeenCalled()
     expect(result).toEqual(
@@ -5398,6 +5521,230 @@ describe('registerWorktreeHandlers', () => {
         sparsePresetId: 'preset-1'
       })
     })
+  })
+
+  it('removes the SSH fork remote after ordinary add failure', async () => {
+    const repo = {
+      id: 'repo-ssh',
+      path: '/remote/repo',
+      displayName: 'ssh',
+      badgeColor: '#000',
+      addedAt: 0,
+      connectionId: 'conn-1',
+      worktreeBaseRef: 'origin/main'
+    }
+    const forkRemoteUrl = 'git@github.com:contributor/orca.git'
+    let configuredForkRemoteUrl: string | null = null
+    let preparationSignal: AbortSignal | undefined
+    let cleanupSignal: AbortSignal | undefined
+    const provider = {
+      exec: vi
+        .fn()
+        .mockImplementation(
+          async (args: string[], _cwd: string, options?: { signal?: AbortSignal }) => {
+            if (args[0] === 'remote' && args.length === 1) {
+              return {
+                stdout: configuredForkRemoteUrl ? 'origin\npr-contributor-orca\n' : 'origin\n',
+                stderr: ''
+              }
+            }
+            if (args[0] === 'remote' && args[1] === 'get-url') {
+              if (args[2] === 'origin') {
+                return { stdout: 'git@github.com:orca/orca.git\n', stderr: '' }
+              }
+              if (args[2] === 'pr-contributor-orca' && configuredForkRemoteUrl) {
+                return { stdout: `${configuredForkRemoteUrl}\n`, stderr: '' }
+              }
+              throw new Error('missing remote')
+            }
+            if (args[0] === 'remote' && args[1] === 'add') {
+              preparationSignal = options?.signal
+              configuredForkRemoteUrl = args[3]
+              return { stdout: '', stderr: '' }
+            }
+            if (args[0] === 'remote' && args[1] === 'remove') {
+              cleanupSignal = options?.signal
+              configuredForkRemoteUrl = null
+              return { stdout: '', stderr: '' }
+            }
+            return { stdout: '', stderr: '' }
+          }
+        ),
+      fetchRemoteTrackingRef: vi.fn().mockResolvedValue(undefined),
+      addWorktree: vi.fn().mockRejectedValue(new Error('ordinary add failed')),
+      removeWorktree: vi.fn().mockResolvedValue(undefined),
+      listWorktrees: vi.fn().mockResolvedValue([
+        {
+          path: '/remote/repo',
+          head: 'main-sha',
+          branch: 'refs/heads/main',
+          isBare: false,
+          isMainWorktree: true
+        }
+      ])
+    }
+    const mux = {
+      request: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn()
+    }
+    store.getRepos.mockReturnValue([repo])
+    store.getRepo.mockReturnValue(repo)
+    store.getAllWorktreeMeta.mockReturnValue({})
+    getSshGitProviderMock.mockReturnValue(provider)
+    getActiveMultiplexerMock.mockReturnValue(mux)
+
+    await expect(
+      handlers['worktrees:create'](null, {
+        repoId: 'repo-ssh',
+        name: 'fork-add-failure',
+        pushTarget: {
+          remoteName: 'pr-contributor-orca',
+          branchName: 'contributor/fix',
+          remoteUrl: forkRemoteUrl
+        }
+      })
+    ).rejects.toThrow('ordinary add failed')
+
+    expect(provider.fetchRemoteTrackingRef).toHaveBeenCalledWith(
+      '/remote/repo',
+      'pr-contributor-orca',
+      'contributor/fix',
+      'refs/remotes/pr-contributor-orca/contributor/fix',
+      { signal: undefined }
+    )
+    expect(provider.exec).toHaveBeenCalledWith(
+      ['remote', 'add', 'pr-contributor-orca', forkRemoteUrl],
+      '/remote/repo',
+      { signal: undefined }
+    )
+    expect(provider.addWorktree).toHaveBeenCalledOnce()
+    expect(provider.listWorktrees).toHaveBeenCalledOnce()
+    expect(provider.removeWorktree).not.toHaveBeenCalled()
+    expect(cleanupSignal).toBeInstanceOf(AbortSignal)
+    expect(cleanupSignal).not.toBe(preparationSignal)
+    expect(cleanupSignal?.aborted).toBe(false)
+    expect(provider.exec).toHaveBeenCalledWith(
+      ['config', '--get-regexp', '^branch\\..*\\.(remote|pushRemote)$'],
+      '/remote/repo',
+      { signal: cleanupSignal }
+    )
+    expect(provider.exec).toHaveBeenCalledWith(
+      ['remote', 'get-url', 'pr-contributor-orca'],
+      '/remote/repo',
+      { signal: cleanupSignal }
+    )
+    expect(provider.exec).toHaveBeenCalledWith(
+      ['remote', 'remove', 'pr-contributor-orca'],
+      '/remote/repo',
+      { signal: cleanupSignal }
+    )
+    expect(configuredForkRemoteUrl).toBeNull()
+    expect(store.setWorktreeMeta).not.toHaveBeenCalled()
+  })
+
+  it('removes the SSH fork remote when remote add loses acknowledgement', async () => {
+    const repo = {
+      id: 'repo-ssh',
+      path: '/remote/repo',
+      displayName: 'ssh',
+      badgeColor: '#000',
+      addedAt: 0,
+      connectionId: 'conn-1',
+      worktreeBaseRef: 'origin/main'
+    }
+    const forkRemoteUrl = 'git@github.com:contributor/orca.git'
+    let configuredForkRemoteUrl: string | null = null
+    let preparationSignal: AbortSignal | undefined
+    let cleanupSignal: AbortSignal | undefined
+    const provider = {
+      exec: vi
+        .fn()
+        .mockImplementation(
+          async (args: string[], _cwd: string, options?: { signal?: AbortSignal }) => {
+            if (args[0] === 'remote' && args.length === 1) {
+              return {
+                stdout: configuredForkRemoteUrl ? 'origin\npr-contributor-orca\n' : 'origin\n',
+                stderr: ''
+              }
+            }
+            if (args[0] === 'remote' && args[1] === 'get-url') {
+              if (args[2] === 'origin') {
+                return { stdout: 'git@github.com:orca/orca.git\n', stderr: '' }
+              }
+              if (args[2] === 'pr-contributor-orca' && configuredForkRemoteUrl) {
+                return { stdout: `${configuredForkRemoteUrl}\n`, stderr: '' }
+              }
+              throw new Error('missing remote')
+            }
+            if (args[0] === 'remote' && args[1] === 'add') {
+              preparationSignal = options?.signal
+              configuredForkRemoteUrl = args[3]
+              throw new Error('remote add acknowledgement lost')
+            }
+            if (args[0] === 'remote' && args[1] === 'remove') {
+              cleanupSignal = options?.signal
+              configuredForkRemoteUrl = null
+              return { stdout: '', stderr: '' }
+            }
+            return { stdout: '', stderr: '' }
+          }
+        ),
+      fetchRemoteTrackingRef: vi.fn().mockResolvedValue(undefined),
+      addWorktree: vi.fn().mockResolvedValue(undefined),
+      removeWorktree: vi.fn().mockResolvedValue(undefined),
+      listWorktrees: vi.fn()
+    }
+    store.getRepos.mockReturnValue([repo])
+    store.getRepo.mockReturnValue(repo)
+    store.getAllWorktreeMeta.mockReturnValue({})
+    getSshGitProviderMock.mockReturnValue(provider)
+    getActiveMultiplexerMock.mockReturnValue({
+      request: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn()
+    })
+
+    await expect(
+      handlers['worktrees:create'](null, {
+        repoId: 'repo-ssh',
+        name: 'fork-add-lost-ack',
+        baseBranch: 'a'.repeat(40),
+        pushTarget: {
+          remoteName: 'pr-contributor-orca',
+          branchName: 'contributor/fix',
+          remoteUrl: forkRemoteUrl
+        }
+      })
+    ).rejects.toThrow('remote add acknowledgement lost')
+
+    expect(provider.exec).toHaveBeenCalledWith(
+      ['remote', 'add', 'pr-contributor-orca', forkRemoteUrl],
+      '/remote/repo',
+      { signal: undefined }
+    )
+    expect(provider.fetchRemoteTrackingRef).not.toHaveBeenCalled()
+    expect(provider.addWorktree).not.toHaveBeenCalled()
+    expect(provider.listWorktrees).not.toHaveBeenCalled()
+    expect(provider.removeWorktree).not.toHaveBeenCalled()
+    expect(cleanupSignal).toBeInstanceOf(AbortSignal)
+    expect(cleanupSignal).not.toBe(preparationSignal)
+    expect(cleanupSignal?.aborted).toBe(false)
+    expect(provider.exec).toHaveBeenCalledWith(
+      ['config', '--get-regexp', '^branch\\..*\\.(remote|pushRemote)$'],
+      '/remote/repo',
+      { signal: cleanupSignal }
+    )
+    expect(provider.exec).toHaveBeenCalledWith(
+      ['remote', 'get-url', 'pr-contributor-orca'],
+      '/remote/repo',
+      { signal: cleanupSignal }
+    )
+    expect(
+      provider.exec.mock.calls.filter(([args]) => args[0] === 'remote' && args[1] === 'remove')
+    ).toEqual([
+      [['remote', 'remove', 'pr-contributor-orca'], '/remote/repo', { signal: cleanupSignal }]
+    ])
+    expect(configuredForkRemoteUrl).toBeNull()
+    expect(store.setWorktreeMeta).not.toHaveBeenCalled()
   })
 
   it('suffixes only the SSH worktree path when an exact PR branch checkout path exists', async () => {

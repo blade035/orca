@@ -34,6 +34,8 @@ import { RipgrepUnavailableError } from '../shared/ripgrep-process-availability'
 import { RelayFilesystemWatchRegistry } from './relay-filesystem-watch-registry'
 import type { RelayWatcherProcessPool } from './relay-watcher-process-pool'
 
+const MAX_TRACKED_MUTATIONS = 256
+
 async function isDirectoryEntry(
   dirPath: string,
   entry: { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }
@@ -76,6 +78,7 @@ export class FsHandler {
   private watchRegistry: RelayFilesystemWatchRegistry
   private streamRegistry = new RelayStreamRegistry()
   private listFilesScans = new ListFilesScanCoordinator()
+  private mutationOperations = new Map<string, Promise<void>>()
 
   constructor(
     dispatcher: RelayDispatcher,
@@ -85,11 +88,12 @@ export class FsHandler {
     this.dispatcher = dispatcher
     this.watchRegistry = new RelayFilesystemWatchRegistry(dispatcher, watcherPool)
     this.registerHandlers()
-    this.dispatcher.onClientDetached?.(() => {
+    this.dispatcher.onClientDetached?.((clientId) => {
       // Why: a detached client's fs.streamAck frames will never arrive; wake
       // any pump parked on the ack window so it re-checks staleness and exits
       // instead of stranding its open file handle.
       this.streamRegistry.wakeAllAckWaiters()
+      this.releaseClientMutations(clientId)
     })
   }
 
@@ -99,17 +103,17 @@ export class FsHandler {
 
   private registerHandlers(): void {
     this.dispatcher.onRequest('fs.readDir', (p) => this.readDir(p))
-    this.dispatcher.onRequest('fs.readFile', (p) => this.readFile(p))
+    this.dispatcher.onRequest('fs.readFile', (p, c) => this.readFile(p, c))
     this.dispatcher.onRequest('fs.readFileStream', (p, c) => this.readFileStream(p, c))
     this.dispatcher.onRequest('fs.readTerminalArtifact', (p) => this.readTerminalArtifact(p))
     this.dispatcher.onRequest('fs.tempDir', () => this.tempDir())
-    this.dispatcher.onRequest('fs.writeFile', (p) => this.writeFile(p))
+    this.dispatcher.onRequest('fs.writeFile', (p, c) => this.writeFile(p, c))
     this.dispatcher.onRequest('fs.writeTerminalArtifact', (p) => this.writeTerminalArtifact(p))
     this.dispatcher.onRequest('fs.stat', (p) => this.stat(p))
     this.dispatcher.onRequest('fs.lstat', (p) => this.lstat(p))
     this.dispatcher.onRequest('fs.deletePath', (p) => this.deletePath(p))
     this.dispatcher.onRequest('fs.createFile', (p) => this.createFile(p))
-    this.dispatcher.onRequest('fs.createDir', (p) => this.createDir(p))
+    this.dispatcher.onRequest('fs.createDir', (p, c) => this.createDir(p, c))
     this.dispatcher.onRequest('fs.createDirNoClobber', (p) => this.createDirNoClobber(p))
     this.dispatcher.onRequest('fs.rename', (p) => this.rename(p))
     this.dispatcher.onRequest('fs.renameNoClobber', (p) => this.renameNoClobber(p))
@@ -133,6 +137,8 @@ export class FsHandler {
     )
     this.dispatcher.onNotification('fs.cancelStream', (p) => this.cancelStream(p))
     this.dispatcher.onNotification('fs.streamAck', (p) => this.streamAck(p))
+    this.dispatcher.onRequest('fs.awaitMutation', (p, c) => this.awaitMutation(p, c))
+    this.dispatcher.onNotification('fs.releaseMutation', (p, c) => this.releaseMutation(p, c))
   }
 
   private async readDir(params: Record<string, unknown>) {
@@ -148,9 +154,9 @@ export class FsHandler {
     return sortDirEntries(mapped)
   }
 
-  private async readFile(params: Record<string, unknown>) {
+  private async readFile(params: Record<string, unknown>, context: RequestContext) {
     const filePath = expandTilde(params.filePath as string)
-    return readRelayFileContent(filePath)
+    return readRelayFileContent(filePath, context.signal)
   }
 
   private async readTerminalArtifact(params: Record<string, unknown>) {
@@ -191,20 +197,22 @@ export class FsHandler {
     }
   }
 
-  private async writeFile(params: Record<string, unknown>) {
+  private async writeFile(params: Record<string, unknown>, context: RequestContext) {
     const filePath = expandTilde(params.filePath as string)
     const content = params.content as string
-    try {
-      const fileStats = await lstat(filePath)
-      if (fileStats.isDirectory()) {
-        throw new Error('Cannot write to a directory')
+    return this.runTrackedMutation(params, context, async () => {
+      try {
+        const fileStats = await lstat(filePath)
+        if (fileStats.isDirectory()) {
+          throw new Error('Cannot write to a directory')
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error
+        }
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw error
-      }
-    }
-    await writeFile(filePath, content, 'utf-8')
+      await writeFile(filePath, content, 'utf-8')
+    })
   }
 
   private async writeTerminalArtifact(params: Record<string, unknown>) {
@@ -267,9 +275,70 @@ export class FsHandler {
     await writeFile(filePath, '', { encoding: 'utf-8', flag: 'wx' })
   }
 
-  private async createDir(params: Record<string, unknown>) {
+  private async createDir(params: Record<string, unknown>, context: RequestContext) {
     const dirPath = expandTilde(params.dirPath as string)
-    await mkdir(dirPath, { recursive: true })
+    return this.runTrackedMutation(params, context, () =>
+      mkdir(dirPath, { recursive: true }).then(() => undefined)
+    )
+  }
+
+  private async runTrackedMutation(
+    params: Record<string, unknown>,
+    context: RequestContext,
+    mutate: () => Promise<void>
+  ): Promise<{ mutationTracked: true } | void> {
+    const operationId = this.readMutationOperationId(params)
+    if (!operationId) {
+      await mutate()
+      return
+    }
+    const key = `${context.clientId}:${operationId}`
+    if (this.mutationOperations.has(key)) {
+      throw new Error('Duplicate filesystem mutation operation.')
+    }
+    if (this.mutationOperations.size >= MAX_TRACKED_MUTATIONS) {
+      throw new Error('Too many unsettled filesystem mutations.')
+    }
+    const operation = mutate()
+    this.mutationOperations.set(key, operation)
+    await operation
+    return { mutationTracked: true }
+  }
+
+  private async awaitMutation(
+    params: Record<string, unknown>,
+    context: RequestContext
+  ): Promise<{ found: boolean }> {
+    const operationId = this.readMutationOperationId(params)
+    const operation = operationId
+      ? this.mutationOperations.get(`${context.clientId}:${operationId}`)
+      : undefined
+    if (!operation) {
+      return { found: false }
+    }
+    await operation.catch(() => undefined)
+    return { found: true }
+  }
+
+  private releaseMutation(params: Record<string, unknown>, context: RequestContext): void {
+    const operationId = this.readMutationOperationId(params)
+    if (operationId) {
+      this.mutationOperations.delete(`${context.clientId}:${operationId}`)
+    }
+  }
+
+  private releaseClientMutations(clientId: number): void {
+    const prefix = `${clientId}:`
+    for (const key of this.mutationOperations.keys()) {
+      if (key.startsWith(prefix)) {
+        this.mutationOperations.delete(key)
+      }
+    }
+  }
+
+  private readMutationOperationId(params: Record<string, unknown>): string | null {
+    const operationId = typeof params.operationId === 'string' ? params.operationId.trim() : ''
+    return operationId.length > 0 && operationId.length <= 128 ? operationId : null
   }
 
   private async createDirNoClobber(params: Record<string, unknown>) {
@@ -433,5 +502,6 @@ export class FsHandler {
   dispose(): void {
     this.watchRegistry.dispose()
     void this.streamRegistry.disposeAll()
+    this.mutationOperations.clear()
   }
 }

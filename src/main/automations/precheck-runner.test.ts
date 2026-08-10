@@ -151,7 +151,8 @@ describe('runAutomationPrecheck', () => {
   it('closes an acquired SSH channel and settles when aborted', async () => {
     const channel = Object.assign(new EventEmitter(), {
       stderr: new PassThrough(),
-      close: vi.fn()
+      close: vi.fn(),
+      destroy: vi.fn()
     })
     const exec = vi.fn(async () => channel)
     sshManagerState.manager = {
@@ -176,6 +177,7 @@ describe('runAutomationPrecheck', () => {
       error: 'Precheck cancelled.'
     })
     expect(channel.close).toHaveBeenCalledTimes(1)
+    expect(channel.destroy).toHaveBeenCalledTimes(1)
     expect(channel.listenerCount('data')).toBe(0)
     expect(channel.listenerCount('close')).toBe(1)
     expect(channel.stderr.listenerCount('data')).toBe(0)
@@ -244,10 +246,12 @@ describe('runAutomationPrecheck', () => {
     await expect(resultPromise).resolves.toMatchObject({ error: 'Precheck cancelled.' })
     const lateChannel = Object.assign(new EventEmitter(), {
       stderr: new PassThrough(),
-      close: vi.fn()
+      close: vi.fn(),
+      destroy: vi.fn()
     })
     resolveExec(lateChannel)
     await vi.waitFor(() => expect(lateChannel.close).toHaveBeenCalledTimes(1))
+    expect(lateChannel.destroy).toHaveBeenCalledTimes(1)
     expect(() => lateChannel.emit('error', new Error('late channel error'))).not.toThrow()
     expect(() => lateChannel.stderr.emit('error', new Error('late stderr error'))).not.toThrow()
     lateChannel.emit('close')

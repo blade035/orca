@@ -77,12 +77,17 @@ export type IGitProvider = {
     repoPath: string,
     branchName: string,
     targetDir: string,
-    options?: { base?: string; checkoutExistingBranch?: boolean; noCheckout?: boolean }
+    options?: {
+      base?: string
+      checkoutExistingBranch?: boolean
+      noCheckout?: boolean
+      signal?: AbortSignal
+    }
   ): Promise<void>
   removeWorktree(
     worktreePath: string,
     force?: boolean,
-    options?: { deleteBranch?: boolean; forceBranchDelete?: boolean }
+    options?: { deleteBranch?: boolean; forceBranchDelete?: boolean; signal?: AbortSignal }
   ): Promise<RemoveWorktreeResult>
   renameCurrentBranch?(worktreePath: string, newBranch: string): Promise<void>
   forceDeletePreservedBranch?(

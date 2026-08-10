@@ -13,8 +13,10 @@ import {
   isBinaryFilePrefix
 } from './fs-handler-utils'
 
-export async function readRelayFileContent(filePath: string) {
+export async function readRelayFileContent(filePath: string, signal?: AbortSignal) {
+  signal?.throwIfAborted()
   const stats = await stat(filePath)
+  signal?.throwIfAborted()
   const mimeType = IMAGE_MIME_TYPES[extname(filePath).toLowerCase()]
   const sizeLimit = mimeType ? MAX_PREVIEWABLE_BINARY_SIZE : MAX_TEXT_FILE_SIZE
   if (stats.size > sizeLimit) {
@@ -24,15 +26,17 @@ export async function readRelayFileContent(filePath: string) {
   }
 
   if (mimeType) {
-    const buffer = await readFile(filePath)
+    const buffer = await readFile(filePath, { signal })
     return { content: buffer.toString('base64'), isBinary: true, isImage: true, mimeType }
   }
 
   if (stats.size > BINARY_PROBE_BYTES && (await isBinaryFilePrefix(filePath))) {
+    signal?.throwIfAborted()
     return { content: '', isBinary: true }
   }
 
-  const buffer = await readFile(filePath)
+  signal?.throwIfAborted()
+  const buffer = await readFile(filePath, { signal })
   if (isBinaryBuffer(buffer)) {
     return { content: '', isBinary: true }
   }

@@ -5,14 +5,14 @@ Requires Node.js 24.x.
 Run Orca on a development server without installing the Electron desktop application:
 
 ```bash
-npx @stablyai/orca@latest
+npx @stablyai/orca@rc
 ```
 
 The command starts a foreground browserless host and prints access links for Orca desktop and web
 clients. It defaults to Tailscale when available and otherwise stays on loopback for an SSH tunnel.
 
 ```bash
-npx @stablyai/orca@latest serve --help
+npx @stablyai/orca@rc serve --help
 ```
 
 Browser panes, computer-use, emulators, and speech are not available in the browserless package.

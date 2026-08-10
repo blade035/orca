@@ -100,6 +100,7 @@ import { streamRelayGitStdout } from './git-stdout-stream'
 const execFileAsync = promisify(execFile)
 const MAX_GIT_BUFFER = 10 * 1024 * 1024
 const BULK_CHUNK_SIZE = 100
+const MAX_TRACKED_ADD_WORKTREE_OPERATIONS = 64
 
 function resolveSubmoduleStatusArea(
   params: Record<string, unknown>
@@ -182,6 +183,10 @@ export class GitHandler {
   private dispatcher: RelayDispatcher
   private readonly gitDiffReadDedupe = new InFlightPromiseDedupe<unknown>()
   private readonly gitCapabilities = new GitCapabilityCache()
+  private readonly addWorktreeOperations = new Map<
+    string | symbol,
+    { controller: AbortController; done: Promise<void> }
+  >()
   // Why: use the bulk lane so large responses do not block interactive PTY echo.
   private readonly responseStreams = new GitResponseStreamRegistry()
 
@@ -201,6 +206,9 @@ export class GitHandler {
   }
 
   dispose(): void {
+    for (const operation of this.addWorktreeOperations.values()) {
+      operation.controller.abort()
+    }
     this.responseStreams.disposeAll()
     this.clearGitMutationReadCaches()
   }
@@ -230,7 +238,9 @@ export class GitHandler {
     this.dispatcher.onRequest('git.upstreamStatus', (p) => this.upstreamStatus(p))
     this.dispatcher.onRequest('git.fetch', (p) => this.fetch(p))
     this.dispatcher.onRequest('git.forkSync', (p, context) => this.forkSync(p, context))
-    this.dispatcher.onRequest('git.fetchRemoteTrackingRef', (p) => this.fetchRemoteTrackingRef(p))
+    this.dispatcher.onRequest('git.fetchRemoteTrackingRef', (p, context) =>
+      this.fetchRemoteTrackingRef(p, context)
+    )
     this.dispatcher.onRequest('git.fetchGitHubPullRequestHead', (p) =>
       this.fetchGitHubPullRequestHead(p)
     )
@@ -252,8 +262,11 @@ export class GitHandler {
     this.dispatcher.onRequest('git.branchDiff', (p, context) => this.branchDiff(p, context))
     this.dispatcher.onRequest('git.commitDiff', (p, context) => this.commitDiff(p, context))
     this.dispatcher.onRequest('git.listWorktrees', (p, context) => this.listWorktrees(p, context))
-    this.dispatcher.onRequest('git.addWorktree', (p) => this.addWorktree(p))
-    this.dispatcher.onRequest('git.removeWorktree', (p) => this.removeWorktree(p))
+    this.dispatcher.onRequest('git.addWorktree', (p, context) => this.addWorktree(p, context))
+    this.dispatcher.onRequest('git.cancelAddWorktree', (p, context) =>
+      this.cancelAddWorktree(p, context)
+    )
+    this.dispatcher.onRequest('git.removeWorktree', (p, context) => this.removeWorktree(p, context))
     this.dispatcher.onRequest('git.worktreeIsClean', (p) => this.worktreeIsClean(p))
     this.dispatcher.onRequest('git.refreshLocalBaseRefForWorktreeCreate', (p) =>
       this.refreshLocalBaseRefForWorktreeCreate(p)
@@ -907,7 +920,7 @@ export class GitHandler {
     })
   }
 
-  private async fetchRemoteTrackingRef(params: Record<string, unknown>) {
+  private async fetchRemoteTrackingRef(params: Record<string, unknown>, context?: RequestContext) {
     this.clearGitMutationReadCaches()
     const worktreePath = params.worktreePath as string
     const remote = params.remote
@@ -929,7 +942,8 @@ export class GitHandler {
       }
 
       try {
-        const { stdout } = await this.git(['remote'], worktreePath)
+        const gitOptions = { signal: context?.signal }
+        const { stdout } = await this.git(['remote'], worktreePath, gitOptions)
         const remotes = stdout
           .split(/\r?\n/)
           .map((line) => line.trim())
@@ -937,8 +951,8 @@ export class GitHandler {
         if (!remotes.includes(remote)) {
           throw new Error(`Remote "${remote}" is not configured.`)
         }
-        await this.git(['check-ref-format', `refs/heads/${branch}`], worktreePath)
-        await this.git(['check-ref-format', ref], worktreePath)
+        await this.git(['check-ref-format', `refs/heads/${branch}`], worktreePath, gitOptions)
+        await this.git(['check-ref-format', ref], worktreePath, gitOptions)
         await this.git(
           [
             ...(skipAutoMaintenance ? GIT_FETCH_SKIP_AUTO_MAINTENANCE_CONFIG_ARGS : []),
@@ -947,7 +961,8 @@ export class GitHandler {
             remote,
             `+refs/heads/${branch}:${ref}`
           ],
-          worktreePath
+          worktreePath,
+          gitOptions
         )
       } catch (error) {
         // Why: create-worktree needs a write-capable fetch that generic git.exec rejects; narrow RPC keeps the allowlist tight.
@@ -1456,14 +1471,60 @@ export class GitHandler {
       .catch(() => [])
   }
 
-  private async addWorktree(params: Record<string, unknown>) {
-    return this.runWithGitReadCacheClear(() => addWorktreeOp(this.git.bind(this), params))
+  private async addWorktree(params: Record<string, unknown>, context: RequestContext) {
+    const operationId =
+      typeof params.operationId === 'string' && params.operationId.trim()
+        ? params.operationId.trim()
+        : null
+    const key = operationId ? `${context.clientId}:${operationId}` : Symbol('legacy-add-worktree')
+    if (operationId && this.addWorktreeOperations.has(key)) {
+      throw new Error('Git worktree add operation ID is already pending for this client')
+    }
+    if (this.addWorktreeOperations.size >= MAX_TRACKED_ADD_WORKTREE_OPERATIONS) {
+      throw new Error('Too many Git worktree additions are still pending; retry after they settle')
+    }
+
+    const controller = new AbortController()
+    const signal = context.signal
+      ? AbortSignal.any([context.signal, controller.signal])
+      : controller.signal
+    let resolveDone!: () => void
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve
+    })
+    const operation = { controller, done }
+    this.addWorktreeOperations.set(key, operation)
+    try {
+      return await this.runWithGitReadCacheClear(() =>
+        addWorktreeOp((args, cwd, options) => this.git(args, cwd, { ...options, signal }), params)
+      )
+    } finally {
+      resolveDone()
+      if (this.addWorktreeOperations.get(key) === operation) {
+        this.addWorktreeOperations.delete(key)
+      }
+    }
   }
 
-  private async removeWorktree(params: Record<string, unknown>) {
+  private async cancelAddWorktree(params: Record<string, unknown>, context: RequestContext) {
+    const operationId = typeof params.operationId === 'string' ? params.operationId.trim() : ''
+    const operation = this.addWorktreeOperations.get(`${context.clientId}:${operationId}`)
+    if (!operationId || !operation) {
+      return { cancelled: false }
+    }
+    operation.controller.abort()
+    await operation.done
+    return { cancelled: true }
+  }
+
+  private async removeWorktree(params: Record<string, unknown>, context?: RequestContext) {
     const remove = () =>
       this.runWithGitReadCacheClear(() =>
-        removeWorktreeOp(this.git.bind(this), params, this.gitCapabilities)
+        removeWorktreeOp(
+          (args, cwd, options) => this.git(args, cwd, { ...options, signal: context?.signal }),
+          params,
+          this.gitCapabilities
+        )
       )
     const worktreePath = params.worktreePath
     return this.watcherRegistry && typeof worktreePath === 'string'

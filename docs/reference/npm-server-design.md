@@ -207,7 +207,16 @@ stops RPC listeners; cancels local or SSH prechecks, aborts and drains headless 
 waits for AgentHook shutdown through the composition root; disconnects from the terminal daemon;
 flushes the store; and releases the profile lock. Startup failures join the same coordinator. A
 failed step is recorded while later steps still run. A normal server shutdown does not kill
-daemon-owned terminals. Startup reconnects to the same daemon and device identity.
+daemon-owned terminals. Startup reconnects to the same daemon and device identity. A failed
+shutdown that does not settle within 30 seconds exits unsuccessfully instead of leaving a wedged
+server process.
+
+Cancellation after worktree creation begins reconciles authoritative Git state even if Git
+mutated before reporting an abort. Destructive rollback requires the exact branch, requested or
+canonical path, and managed-worktree instance. Empty or unavailable SSH inventory is ambiguous and
+fails closed. SSH setup mutations use client-scoped IDs and a relay settlement/release handshake,
+so rollback cannot race a late setup write; old relays retain the original success path and fail
+closed when a failed mutation cannot be confirmed settled.
 
 Every listener, socket, timer, and signal handler installed by the Node composition root has a
 matching joined cleanup path before the process exits.
@@ -340,10 +349,12 @@ the terminal marker.
 - [ ] Publish the first immutable candidate under the non-default `rc` dist-tag.
 - [ ] Promote the exact matrix-validated candidate to `latest` before stable onboarding ships.
 
-### Product onboarding
+### Candidate onboarding
 
-- [x] Add the npm command to the remote-host connection UI.
+- [x] Add the release-candidate npm command to the remote-host connection UI.
 - [x] Explain Tailscale, SSH-tunnel, and explicit LAN choices.
+- [ ] Switch stable docs and product onboarding from `@rc` to `@latest` after exact-version
+      promotion.
 - [x] Link the shorter npm-server documentation from the existing Linux guide.
 - [x] Capture visual proof for the UI change.
 
@@ -404,7 +415,7 @@ real E2EE, workspace, Git, PTY, shutdown, and restart-continuity oracle on macOS
 three amd64 Ubuntu versions. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active
 native PTY against glibc 2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
 
-The current focused selector passed 552 tests across 31 server, RPC, cross-version wire,
+The current focused selector passed 554 tests across 31 server, RPC, cross-version wire,
 onboarding, browserless composition, automation, precheck, profile-lock, readiness,
 installed-process, AgentHook, and shutdown files. Four workflow and release-contract files passed
 62 tests with one platform-specific skip:
@@ -449,11 +460,19 @@ pnpm exec vitest run --config config/vitest.config.ts \
   config/scripts/package-electron-runtime-contract.test.mjs
 ```
 
-The final macOS arm64 installed-tarball oracle passed with 18,203,728 packed bytes and 55,879,495
+The current macOS arm64 installed-tarball oracle passed with 18,206,565 packed bytes and 55,905,664
 unpacked bytes. Its POSIX startup oracle also sent SIGTERM before readiness, observed no credential
 output, and restarted the same profile successfully. Ubuntu 20.04, 22.04, and 24.04 amd64 passed
 the same installed runtime oracle in Docker; Ubuntu 20.04 also verified the glibc 2.31 and
 `GLIBCXX_3.4.28` floors.
+
+The final cancellation lifecycle gate passed 1,463 tests across eleven deterministic files with one
+unrelated platform-specific skip in 10.29 seconds. It covers commit-point reconciliation,
+repo-scoped fork-remote lifecycle serialization and compensation, strict empty-inventory handling,
+instance-fenced removal, relay filesystem mutation settlement, legacy relay fallback, and the
+failed-shutdown watchdog. A Docker rerun after these lifecycle edits was blocked by an unrelated
+wedged local Docker Desktop daemon; the earlier package matrix remains green, and the final Linux
+package rerun is delegated to required CI.
 
 Ten fresh-profile installed-package trials on macOS arm64 reached the first schema-v1 readiness
 line in 352.705–748.323 ms, with a 369.474 ms median. Recursive process snapshots at one and three

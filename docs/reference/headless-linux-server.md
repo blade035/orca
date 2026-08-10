@@ -2,12 +2,12 @@
 
 Use this guide to run Orca on an Ubuntu VPS or remote build computer.
 
-## Browserless Node server (recommended)
+## Browserless Node server (release candidate)
 
 Install Node.js 24, then run:
 
 ```bash
-npx @stablyai/orca@latest
+npx @stablyai/orca@rc
 ```
 
 This package contains the Orca runtime and web client, but not Electron or Chromium. It needs no
@@ -22,7 +22,7 @@ never changes Tailscale or firewall configuration.
 For automation, provide the listener and advertised address explicitly:
 
 ```bash
-npx @stablyai/orca@latest serve \
+npx @stablyai/orca@rc serve \
   --listen 100.64.1.20 \
   --pairing-address 100.64.1.20 \
   --port 6768 \
@@ -36,6 +36,9 @@ interfaces; use both flags when the server should be reachable only through one 
 The package stores state in `$XDG_STATE_HOME/orca` or `~/.local/state/orca`. Override it with
 `--data-dir` or `ORCA_SERVER_DATA_DIR`. Pairing identity and daemon terminals survive server
 restarts. Stop the foreground server with `Ctrl+C`.
+
+The package remains on the non-default `rc` tag while its platform matrix is collected. Stable
+onboarding will switch these commands to `@latest` only after that exact candidate is promoted.
 
 For the package architecture, security policy, capability behavior, and validation topology, see
 the [npm server design](./npm-server-design.md).

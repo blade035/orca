@@ -4,17 +4,26 @@ const SSH_CONNECTION_UNAVAILABLE_MESSAGE =
   'SSH connection is not available. Please reconnect and try again.'
 
 type SshRootRegistrationMux = {
-  request: (method: 'session.registerRoot', payload: { rootPath: string }) => Promise<unknown>
+  request: (
+    method: 'session.registerRoot',
+    payload: { rootPath: string },
+    options?: { signal?: AbortSignal }
+  ) => Promise<unknown>
   notify: (method: 'session.registerRoot', payload: { rootPath: string }) => void
 }
 
 async function registerSshWorktreeCreateRoots(
   mux: SshRootRegistrationMux,
-  rootPaths: string[]
+  rootPaths: string[],
+  signal?: AbortSignal
 ): Promise<void> {
   try {
     await Promise.all(
-      rootPaths.map((rootPath) => mux.request('session.registerRoot', { rootPath }))
+      rootPaths.map((rootPath) =>
+        signal
+          ? mux.request('session.registerRoot', { rootPath }, { signal })
+          : mux.request('session.registerRoot', { rootPath })
+      )
     )
   } catch (err) {
     if (err instanceof Error && err.message.includes('Method not found')) {
@@ -40,11 +49,12 @@ export async function registerOptionalSshWorktreeCreateRoots(
 
 export async function registerRequiredSshWorktreeCreateRoots(
   connectionId: string,
-  rootPaths: string[]
+  rootPaths: string[],
+  signal?: AbortSignal
 ): Promise<void> {
   const mux = getActiveMultiplexer(connectionId)
   if (!mux) {
     throw new Error(SSH_CONNECTION_UNAVAILABLE_MESSAGE)
   }
-  await registerSshWorktreeCreateRoots(mux, rootPaths)
+  await registerSshWorktreeCreateRoots(mux, rootPaths, signal)
 }

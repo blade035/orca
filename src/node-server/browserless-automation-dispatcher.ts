@@ -28,9 +28,10 @@ export function createBrowserlessAutomationDispatcher(
     if (automation.workspaceMode === 'new_per_run') {
       const created = await awaitRuntimeOperation(
         () =>
-          runtime.createManagedWorktree(
-            buildHeadlessAutomationWorktreeCreateArgs({ automation, run, repo: target.repo })
-          ),
+          runtime.createManagedWorktree({
+            ...buildHeadlessAutomationWorktreeCreateArgs({ automation, run, repo: target.repo }),
+            signal
+          }),
         signal,
         'join'
       )

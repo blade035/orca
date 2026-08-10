@@ -26,6 +26,7 @@ import type { CommitMessageDraftContext } from '../../shared/commit-message-gene
 import type { CommitMessagePlan } from '../../shared/commit-message-plan'
 import type { RemoteCommitMessageExecResult } from '../text-generation/commit-message-text-generation'
 import type { RemoteHostPlatform } from '../ssh/ssh-remote-platform'
+import { randomUUID } from 'node:crypto'
 import {
   describeMaxBufferOverflowError,
   isMaxBufferOverflowError
@@ -585,16 +586,19 @@ export class SshGitProvider implements IGitProvider {
     remote: string,
     branch: string,
     ref: string,
-    options?: { skipAutoMaintenance?: boolean }
+    options?: { skipAutoMaintenance?: boolean; signal?: AbortSignal }
   ): Promise<void> {
     await this.runWithDiffDedupeClear(async () => {
-      await this.mux.request('git.fetchRemoteTrackingRef', {
+      const request = {
         worktreePath,
         remote,
         branch,
         ref,
         ...(options?.skipAutoMaintenance ? { skipAutoMaintenance: true } : {})
-      })
+      }
+      await (options?.signal
+        ? this.mux.request('git.fetchRemoteTrackingRef', request, { signal: options.signal })
+        : this.mux.request('git.fetchRemoteTrackingRef', request))
     })
   }
 
@@ -725,31 +729,88 @@ export class SshGitProvider implements IGitProvider {
     repoPath: string,
     branchName: string,
     targetDir: string,
-    options?: { base?: string; checkoutExistingBranch?: boolean; noCheckout?: boolean }
+    options?: {
+      base?: string
+      checkoutExistingBranch?: boolean
+      noCheckout?: boolean
+      signal?: AbortSignal
+    }
   ): Promise<void> {
     await this.runWithDiffDedupeClear(async () => {
-      await this.mux.request('git.addWorktree', {
-        repoPath,
-        branchName,
-        targetDir,
-        ...options
-      })
+      const { signal, ...requestOptions } = options ?? {}
+      signal?.throwIfAborted()
+      const operationId = signal ? randomUUID() : undefined
+      const cancellation: { request: Promise<{ error?: unknown }> | null } = { request: null }
+      const onAbort = (): void => {
+        if (cancellation.request) {
+          return
+        }
+        cancellation.request = Promise.resolve()
+          .then(() => this.mux.request('git.cancelAddWorktree', { operationId }))
+          .then(
+            () => ({}),
+            (error) => (isJsonRpcMethodNotFoundError(error) ? {} : { error })
+          )
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      let addRequest: Promise<unknown>
+      try {
+        addRequest = this.mux.request('git.addWorktree', {
+          repoPath,
+          branchName,
+          targetDir,
+          ...requestOptions,
+          ...(operationId ? { operationId } : {})
+        })
+      } catch (error) {
+        signal?.removeEventListener('abort', onAbort)
+        throw error
+      }
+      if (signal?.aborted) {
+        onAbort()
+      }
+      let addError: unknown
+      try {
+        await addRequest
+      } catch (error) {
+        addError = error
+      } finally {
+        signal?.removeEventListener('abort', onAbort)
+      }
+      const cancelError = cancellation.request ? (await cancellation.request).error : undefined
+      if (signal?.aborted) {
+        const abortError = new Error('Remote worktree creation was cancelled.')
+        abortError.name = 'AbortError'
+        if (cancelError) {
+          throw new AggregateError([abortError, cancelError], abortError.message)
+        }
+        throw abortError
+      }
+      if (addError) {
+        throw addError
+      }
+      if (cancelError) {
+        throw cancelError
+      }
     })
   }
 
   async removeWorktree(
     worktreePath: string,
     force?: boolean,
-    options?: { deleteBranch?: boolean; forceBranchDelete?: boolean }
+    options?: { deleteBranch?: boolean; forceBranchDelete?: boolean; signal?: AbortSignal }
   ): Promise<RemoveWorktreeResult> {
-    return this.runWithDiffDedupeClear(
-      async () =>
-        ((await this.mux.request('git.removeWorktree', {
-          worktreePath,
-          force,
-          ...options
-        })) ?? {}) as RemoveWorktreeResult
-    )
+    return this.runWithDiffDedupeClear(async () => {
+      const { signal, ...requestOptions } = options ?? {}
+      const request = {
+        worktreePath,
+        force,
+        ...requestOptions
+      }
+      return ((await (signal
+        ? this.mux.request('git.removeWorktree', request, { signal })
+        : this.mux.request('git.removeWorktree', request))) ?? {}) as RemoveWorktreeResult
+    })
   }
 
   async worktreeIsClean(

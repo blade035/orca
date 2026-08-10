@@ -86,7 +86,9 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
     shutdown,
     exit: (exitCode) => process.exit(exitCode),
     getExitCode: () => (typeof process.exitCode === 'number' ? process.exitCode : 0),
-    onSignal: () => startupAbortController.abort()
+    onSignal: () => startupAbortController.abort(),
+    onForceExit: () =>
+      process.stderr.write('Orca server shutdown exceeded 30 seconds; forcing exit.\n')
   })
 
   try {

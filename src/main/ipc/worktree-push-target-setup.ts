@@ -76,7 +76,8 @@ export async function prepareWorktreePushTargetWithExec(
   execGit: GitRemoteExec,
   repoPath: string,
   target: GitPushTarget,
-  isRemoteCreatedByKnownWorktree: (existingRemote: string) => boolean
+  isRemoteCreatedByKnownWorktree: (existingRemote: string) => boolean,
+  options: { onRemoteCreated?: (createdTarget: GitPushTarget) => void } = {}
 ): Promise<GitPushTarget> {
   const { remoteCreated: _ignoredRemoteCreated, ...sanitizedTarget } = target
   let remoteName = target.remoteName
@@ -90,8 +91,13 @@ export async function prepareWorktreePushTargetWithExec(
       remoteCreated = isRemoteCreatedByKnownWorktree(existingRemote)
     } else {
       remoteName = await ensureUniqueRemoteName(execGit, repoPath, target.remoteName)
-      await execGit(['remote', 'add', remoteName, target.remoteUrl], repoPath)
       remoteCreated = true
+      options.onRemoteCreated?.({
+        ...sanitizedTarget,
+        remoteName,
+        remoteCreated: true
+      })
+      await execGit(['remote', 'add', remoteName, target.remoteUrl], repoPath)
     }
   }
 

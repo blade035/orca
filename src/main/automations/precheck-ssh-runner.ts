@@ -42,6 +42,9 @@ function closeSshPrecheckChannel(channel: ClientChannel): void {
   channel.once('close', stopObserving)
   try {
     channel.close()
+  } catch {}
+  try {
+    channel.destroy()
   } catch {
     stopObserving()
   }
@@ -51,14 +54,14 @@ function runSshChannelPrecheck(args: {
   precheck: AutomationPrecheck
   channel: ClientChannel
   startedAt: number
+  timeoutMs: number
   signal?: AbortSignal
 }): Promise<AutomationPrecheckResult> {
-  const { precheck, channel, startedAt, signal } = args
+  const { precheck, channel, startedAt, timeoutMs, signal } = args
   if (signal?.aborted) {
     closeSshPrecheckChannel(channel)
     return Promise.resolve(failedPrecheckResult(precheck, startedAt, PRECHECK_CANCELLED_ERROR))
   }
-  const timeoutMs = precheck.timeoutSeconds * 1000
   return new Promise((resolve) => {
     let stdout: PrecheckTailBuffer = { content: '', truncated: false }
     let stderr: PrecheckTailBuffer = { content: '', truncated: false }
@@ -97,8 +100,8 @@ function runSshChannelPrecheck(args: {
     }
     const onAbort = (): void => {
       cancelled = true
-      closeSshPrecheckChannel(channel)
       settle(null, PRECHECK_CANCELLED_ERROR)
+      closeSshPrecheckChannel(channel)
     }
     const cleanup = (): void => {
       signal?.removeEventListener('abort', onAbort)
@@ -137,6 +140,7 @@ function runSshChannelPrecheck(args: {
 
     timeout = setTimeout(() => {
       timedOut = true
+      settle(null, `Precheck timed out after ${precheck.timeoutSeconds}s.`)
       closeSshPrecheckChannel(channel)
     }, timeoutMs)
     channel.on('error', fail)
@@ -152,45 +156,70 @@ function runSshChannelPrecheck(args: {
   })
 }
 
-type SshChannelAcquisition = { channel: ClientChannel } | { aborted: true }
+type SshChannelAcquisition = { channel: ClientChannel } | { aborted: true } | { timedOut: true }
 
 function acquireSshPrecheckChannel(
   channelPromise: Promise<ClientChannel>,
-  signal: AbortSignal
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<SshChannelAcquisition> {
   return new Promise((resolve, reject) => {
     let settled = false
-    const onAbort = (): void => {
+    let timeout: ReturnType<typeof setTimeout> | null = null
+    const finish = (result: SshChannelAcquisition): void => {
       if (settled) {
         return
       }
       settled = true
-      signal.removeEventListener('abort', onAbort)
-      resolve({ aborted: true })
+      if (timeout) {
+        clearTimeout(timeout)
+      }
+      signal?.removeEventListener('abort', onAbort)
+      resolve(result)
     }
-    signal.addEventListener('abort', onAbort, { once: true })
+    const onAbort = (): void => {
+      finish({ aborted: true })
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    timeout = setTimeout(() => finish({ timedOut: true }), timeoutMs)
     channelPromise.then(
       (channel) => {
         if (settled) {
           closeSshPrecheckChannel(channel)
           return
         }
-        settled = true
-        signal.removeEventListener('abort', onAbort)
-        resolve({ channel })
+        finish({ channel })
       },
       (error: unknown) => {
         if (settled) {
           return
         }
         settled = true
-        signal.removeEventListener('abort', onAbort)
+        if (timeout) {
+          clearTimeout(timeout)
+        }
+        signal?.removeEventListener('abort', onAbort)
         reject(error)
       }
     )
-    if (signal.aborted) {
+    if (signal?.aborted) {
       onAbort()
     }
+  })
+}
+
+function timedOutSshPrecheck(
+  precheck: AutomationPrecheck,
+  startedAt: number
+): AutomationPrecheckResult {
+  return createPrecheckResult({
+    precheck,
+    startedAt,
+    stdout: { content: '', truncated: false },
+    stderr: { content: '', truncated: false },
+    exitCode: null,
+    timedOut: true,
+    error: `Precheck timed out after ${precheck.timeoutSeconds}s.`
   })
 }
 
@@ -209,18 +238,22 @@ export async function runSshPrecheck(
     return failedPrecheckResult(precheck, startedAt, 'SSH target is not connected.')
   }
   try {
+    const timeoutMs = precheck.timeoutSeconds * 1000
+    const deadline = startedAt + timeoutMs
     const remoteCommand = `cd ${shellEscape(target.cwd)} && ${precheck.command}`
     const channelPromise = connection.exec(remoteCommand)
-    const acquisition = signal
-      ? await acquireSshPrecheckChannel(channelPromise, signal)
-      : { channel: await channelPromise }
+    const acquisition = await acquireSshPrecheckChannel(channelPromise, timeoutMs, signal)
     if ('aborted' in acquisition) {
       return failedPrecheckResult(precheck, startedAt, PRECHECK_CANCELLED_ERROR)
+    }
+    if ('timedOut' in acquisition) {
+      return timedOutSshPrecheck(precheck, startedAt)
     }
     return await runSshChannelPrecheck({
       precheck,
       channel: acquisition.channel,
       startedAt,
+      timeoutMs: Math.max(0, deadline - Date.now()),
       ...(signal ? { signal } : {})
     })
   } catch (error) {

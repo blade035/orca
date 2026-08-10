@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import { Button } from '../ui/button'
 import { translate } from '@/i18n/i18n'
 
-const NODE_SERVER_COMMAND = 'npx @stablyai/orca@latest'
+const NODE_SERVER_COMMAND = 'npx @stablyai/orca@rc'
 
 export function NodeServerSetupCallout(): React.JSX.Element {
   const copyCommand = async (): Promise<void> => {

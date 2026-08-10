@@ -1,5 +1,5 @@
 import type { SshChannelMultiplexer } from '../ssh/ssh-channel-multiplexer'
-import { isMethodNotFoundError, readFileViaStream } from '../ssh/ssh-filesystem-stream-reader'
+import { isMethodNotFoundError } from '../ssh/ssh-filesystem-stream-reader'
 import { uploadBuffer } from '../ssh/sftp-upload'
 import { lstatViaSftp } from './ssh-filesystem-provider-sftp'
 import {
@@ -25,6 +25,8 @@ import type { DirEntry, FsChangeEvent, SearchOptions, SearchResult } from '../..
 import { routeSshFilesystemWatchNotification } from './ssh-filesystem-watch-notifications'
 import type { WorkspaceSpaceDirectoryScanResult } from '../../shared/workspace-space-types'
 import { isWindowsRemoteHost, type RemoteHostPlatform } from '../ssh/ssh-remote-platform'
+import { readSshFilesystemFile } from './ssh-filesystem-read-file'
+import { requestSettledSshFilesystemMutation } from './ssh-filesystem-mutation-settlement'
 const WORKSPACE_SPACE_SCAN_TIMEOUT_MS = 130_000
 
 export class SshFilesystemProvider implements IFilesystemProvider {
@@ -87,26 +89,20 @@ export class SshFilesystemProvider implements IFilesystemProvider {
     return (await this.mux.request('fs.readDir', { dirPath })) as DirEntry[]
   }
 
-  async readFile(filePath: string): Promise<FileReadResult> {
+  async readFile(filePath: string, options?: { signal?: AbortSignal }): Promise<FileReadResult> {
     // Why: streaming is the default path so previews above the legacy single-
     // frame budget (~12 MB after base64) don't hit MAX_MESSAGE_SIZE. Old relays
     // that don't implement fs.readFileStream surface as MethodNotFound; we fall
     // back to the legacy single-shot fs.readFile (which retains the old 10 MB
     // cap on those hosts).
-    try {
-      return await readFileViaStream(this.mux, filePath)
-    } catch (err) {
-      if (isMethodNotFoundError(err)) {
-        if (!this.loggedStreamFallback) {
-          this.loggedStreamFallback = true
-          console.warn(
-            '[ssh-fs] Relay does not implement fs.readFileStream; falling back to fs.readFile (10 MB cap)'
-          )
-        }
-        return (await this.mux.request('fs.readFile', { filePath })) as FileReadResult
+    return readSshFilesystemFile(this.mux, filePath, options?.signal, () => {
+      if (!this.loggedStreamFallback) {
+        this.loggedStreamFallback = true
+        console.warn(
+          '[ssh-fs] Relay does not implement fs.readFileStream; falling back to fs.readFile (10 MB cap)'
+        )
       }
-      throw err
-    }
+    })
   }
 
   async readTerminalArtifact(
@@ -157,7 +153,14 @@ export class SshFilesystemProvider implements IFilesystemProvider {
     return this.tempDirPromise
   }
 
-  async writeFile(filePath: string, content: string): Promise<void> {
+  async writeFile(filePath: string, content: string, options?: { requireSettlement?: boolean }) {
+    if (options?.requireSettlement) {
+      await requestSettledSshFilesystemMutation(this.mux, 'fs.writeFile', {
+        filePath,
+        content
+      })
+      return
+    }
     await this.mux.request('fs.writeFile', { filePath, content })
   }
 
@@ -263,7 +266,11 @@ export class SshFilesystemProvider implements IFilesystemProvider {
     await this.mux.request('fs.createFile', { filePath })
   }
 
-  async createDir(dirPath: string): Promise<void> {
+  async createDir(dirPath: string, options?: { requireSettlement?: boolean }): Promise<void> {
+    if (options?.requireSettlement) {
+      await requestSettledSshFilesystemMutation(this.mux, 'fs.createDir', { dirPath })
+      return
+    }
     await this.mux.request('fs.createDir', { dirPath })
   }
 

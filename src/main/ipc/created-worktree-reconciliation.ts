@@ -15,3 +15,20 @@ export function findCreatedWorktree<T extends { path: string; branch?: string }>
 
   return worktrees.find((worktree) => worktree.branch === `refs/heads/${branchName}`)
 }
+
+export function findCreatedWorktreeForRollback<T extends { path: string; branch?: string }>(
+  worktrees: readonly T[],
+  requestedPath: string,
+  branchName: string,
+  resolvedRequestedPath?: string,
+  platform = process.platform
+): T | undefined {
+  const expectedBranch = `refs/heads/${branchName}`
+  return worktrees.find(
+    (worktree) =>
+      worktree.branch === expectedBranch &&
+      (areWorktreePathsEqual(worktree.path, requestedPath, platform) ||
+        (resolvedRequestedPath !== undefined &&
+          areWorktreePathsEqual(worktree.path, resolvedRequestedPath, platform)))
+  )
+}

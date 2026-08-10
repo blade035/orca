@@ -26,15 +26,16 @@
       "providers": ["local", "ssh", "paired-runtime-host"],
       "coveredPlatforms": ["macos"],
       "coveredProviders": ["local", "ssh"],
-      "coverageNotes": "A real local child process and injected SSH acquisition/channel barriers cover cancellation, late fulfillment and rejection, process death, channel close, listener cleanup, and service drain. Physical Windows taskkill and live SSH transport remain uncollected.",
+      "coverageNotes": "A real local child process and injected SSH acquisition/channel barriers cover cancellation, total deadlines, late fulfillment and rejection, process death, channel close, listener cleanup, and service drain. Physical Windows taskkill and live SSH transport remain uncollected.",
       "motivatingLinks": ["https://github.com/stablyai/orca/pull/13452"],
-      "invariant": "Stopping a headless automation service must abort any scheduled precheck, terminate its local process tree or close its SSH channel, consume late SSH acquisition settlement, and drain without waiting for the configured precheck timeout or leaving an unobserved error event.",
-      "oracle": "Hold local execution, SSH channel execution, and SSH channel acquisition at deterministic barriers; abort the shared headless stop signal; require a cancelled result, local child death, acquired and late-acquired channel close, consumed late rejection, safe late channel and stderr errors, listener cleanup on close, no dispatcher call, and a settled service drain.",
+      "invariant": "A headless precheck must use one total deadline across SSH channel acquisition and execution. Stopping the service must abort any scheduled precheck, terminate its local process tree or close its SSH channel, consume late SSH acquisition settlement, and drain without waiting for the configured timeout or leaving an unobserved error event.",
+      "oracle": "Hold local execution, SSH channel execution, and SSH channel acquisition at deterministic barriers; require the shared deadline to settle acquisition and half-open channel timeouts; abort the shared headless stop signal; require a cancelled result, local child death, acquired and late-acquired channel close, consumed late rejection, safe late channel and stderr errors, listener cleanup on close, no dispatcher call, and a settled service drain.",
       "commands": [
-        "pnpm exec vitest run --config config/vitest.config.ts src/main/automations/precheck-runner.test.ts src/main/automations/service-precheck.test.ts"
+        "pnpm exec vitest run --config config/vitest.config.ts src/main/automations/precheck-runner.test.ts src/main/automations/precheck-ssh-timeout.test.ts src/main/automations/service-precheck.test.ts"
       ],
       "testFiles": [
         "src/main/automations/precheck-runner.test.ts",
+        "src/main/automations/precheck-ssh-timeout.test.ts",
         "src/main/automations/service-precheck.test.ts"
       ],
       "assertionRefs": [
@@ -48,6 +49,14 @@
           ]
         },
         {
+          "file": "src/main/automations/precheck-ssh-timeout.test.ts",
+          "assertions": [
+            "bounds SSH channel acquisition with the precheck deadline",
+            "hard-destroys a half-open channel and releases its listeners",
+            "uses one deadline across acquisition and channel execution"
+          ]
+        },
+        {
           "file": "src/main/automations/service-precheck.test.ts",
           "assertions": ["cancels and drains a scheduled headless precheck during shutdown"]
         }
@@ -58,9 +67,9 @@
           "runner": "local",
           "platform": "macos",
           "result": "passed",
-          "command": "pnpm exec vitest run --config config/vitest.config.ts src/main/automations/precheck-runner.test.ts src/main/automations/service-precheck.test.ts",
-          "durationSeconds": 5,
-          "summary": "Two deterministic files passed 12 precheck and service lifecycle tests; the broader four-file automation lifecycle selector passed 27 tests."
+          "command": "pnpm exec vitest run --config config/vitest.config.ts src/main/automations/precheck-runner.test.ts src/main/automations/precheck-ssh-timeout.test.ts src/main/automations/service-precheck.test.ts",
+          "durationSeconds": 2,
+          "summary": "Three deterministic files passed 16 precheck and service lifecycle tests."
         }
       ],
       "runtimeBudget": {
@@ -73,7 +82,7 @@
       },
       "redGreenEvidence": {
         "status": "complete",
-        "evidence": "Before signal propagation, local and SSH cancellation tests waited for process or channel timeouts and the service drain could not settle. The candidate passes all cancellation, late-settlement, process-death, channel-close, and listener-cleanup assertions."
+        "evidence": "Before signal propagation and deadline fencing, local and SSH cancellation could wait indefinitely, channel acquisition was outside the timeout, and a half-open channel never settled after timeout. The candidate passes deadline, cancellation, late-settlement, process-death, channel-close, and listener-cleanup assertions."
       },
       "performanceBudget": {
         "required": true,
@@ -89,6 +98,169 @@
         "SSH behavior uses injected channels rather than a live remote transport."
       ],
       "demotionRule": "Demote if shutdown can wait for the precheck timeout, leave a child or channel live, leak listeners, surface an unhandled late error or rejection, or dispatch after cancellation."
+    },
+    {
+      "id": "automation.headless-worktree-create-shutdown",
+      "title": "Headless shutdown joins worktree creation rollback",
+      "maturity": "experimental",
+      "protection": "partial",
+      "owner": "automations",
+      "layer": "main-runtime-ssh-relay-lifecycle",
+      "surfaces": [
+        "browserless new-per-run automation workspaces",
+        "local and WSL Git worktree creation",
+        "SSH relay Git worktree creation",
+        "startup and setup terminal provisioning"
+      ],
+      "platforms": ["macos", "linux", "windows"],
+      "providers": ["local", "wsl", "ssh", "paired-runtime-host"],
+      "coveredPlatforms": ["macos"],
+      "coveredProviders": ["local", "ssh"],
+      "coverageNotes": "Deterministic barriers cover dispatcher signal ownership, local and SSH add cancellation, relay Git and filesystem settlement, registration-aware rollback, replacement-instance fencing, terminal provisioning, bounded SSH setup operations, the process shutdown watchdog, and old-relay MethodNotFound fallback. Physical Windows, WSL, live Docker SSH, and headed paired-server cancellation remain uncollected.",
+      "motivatingLinks": ["https://github.com/stablyai/orca/pull/13452"],
+      "invariant": "Stopping a browserless new-per-run automation must abort local or SSH worktree creation and terminal provisioning, wait for authoritative Git and setup-filesystem settlement, remove only the exact worktree registration and metadata generation owned by that create, and reject before agent dispatch without late metadata or filesystem publication.",
+      "oracle": "Hold local Git add, SSH add/cancel RPCs, setup-file mutations, relay cleanup, and dispatcher shutdown at explicit barriers. Abort the shared shutdown signal; require the dispatcher and provider to remain pending until authority settles, require exact operation, path, branch, client, and instance identity, then prove owned worktrees and metadata are removed. Treat empty remote inventory, replacement identity, and unconfirmed filesystem settlement as unknown and issue no destructive delete. Run an old-relay MethodNotFound response and require the original add to settle before rollback and rejection.",
+      "commands": [
+        "pnpm exec vitest run --config config/vitest.config.ts src/main/worktree-create-cancellation.test.ts src/main/ipc/worktree-push-target-remote-lifecycle.test.ts src/main/ipc/worktrees.test.ts src/main/ipc/created-worktree-reconciliation.test.ts src/node-server/browserless-automation-dispatcher.test.ts src/node-server/server-signal-shutdown.test.ts src/main/providers/ssh-filesystem-provider-cancellation.test.ts src/main/providers/ssh-git-provider.test.ts src/relay/fs-handler-mutation-settlement.test.ts src/relay/git-handler-worktree-cancellation.test.ts src/main/runtime/orca-runtime.test.ts"
+      ],
+      "testFiles": [
+        "src/main/worktree-create-cancellation.test.ts",
+        "src/main/ipc/worktree-push-target-remote-lifecycle.test.ts",
+        "src/main/ipc/worktrees.test.ts",
+        "src/main/ipc/created-worktree-reconciliation.test.ts",
+        "src/node-server/browserless-automation-dispatcher.test.ts",
+        "src/node-server/server-signal-shutdown.test.ts",
+        "src/main/providers/ssh-filesystem-provider-cancellation.test.ts",
+        "src/main/providers/ssh-git-provider.test.ts",
+        "src/relay/fs-handler-mutation-settlement.test.ts",
+        "src/relay/git-handler-worktree-cancellation.test.ts",
+        "src/main/runtime/orca-runtime.test.ts"
+      ],
+      "assertionRefs": [
+        {
+          "file": "src/node-server/browserless-automation-dispatcher.test.ts",
+          "assertions": ["joins an in-flight worktree creation before shutdown settles"]
+        },
+        {
+          "file": "src/main/runtime/orca-runtime.test.ts",
+          "assertions": [
+            "joins local rollback when add mutates then rejects cancellation",
+            "reconciles cancellation before local worktree registration as already rolled back",
+            "reconciles ambiguous SSH add rejection and fails closed on unavailable inventory",
+            "cancels post-add SSH work and rolls back with a fresh bounded signal",
+            "rechecks cancellation instance identity after removal inventory settles",
+            "preserves a replacement instance while orphan cleanup waits for PTY teardown",
+            "removes an exact newly added fork remote when preparation fetch fails",
+            "removes a created fork remote when cancellation leaves no worktree row",
+            "removes a created fork remote when local worktree add fails before registration"
+          ]
+        },
+        {
+          "file": "src/main/ipc/worktree-push-target-remote-lifecycle.test.ts",
+          "assertions": [
+            "serializes operations in the same repository scope",
+            "remains usable when a rejected operation releases in finally",
+            "allows different repository scopes to overlap",
+            "isolates identical repository paths across SSH connections and WSL distros"
+          ]
+        },
+        {
+          "file": "src/main/ipc/worktrees.test.ts",
+          "assertions": [
+            "removes the local fork remote after ordinary add failure",
+            "removes a local fork remote when add mutates then rejects",
+            "removes the SSH fork remote after ordinary add failure",
+            "removes the SSH fork remote when remote add loses acknowledgement"
+          ]
+        },
+        {
+          "file": "src/main/ipc/created-worktree-reconciliation.test.ts",
+          "assertions": [
+            "rejects a path occupant on another branch",
+            "uses exact branch identity across path aliases",
+            "rejects the expected branch at an unrelated path"
+          ]
+        },
+        {
+          "file": "src/node-server/server-signal-shutdown.test.ts",
+          "assertions": [
+            "forces a failed exit when joined teardown exceeds its deadline",
+            "clears the force-exit deadline after normal teardown"
+          ]
+        },
+        {
+          "file": "src/main/providers/ssh-filesystem-provider-cancellation.test.ts",
+          "assertions": [
+            "forwards cancellation through setup reads",
+            "releases a confirmed setup mutation",
+            "joins authoritative mutation settlement after the original request fails",
+            "marks rollback unsafe when relay settlement is unavailable"
+          ]
+        },
+        {
+          "file": "src/relay/fs-handler-mutation-settlement.test.ts",
+          "assertions": [
+            "registers before write preflight and retains settlement until release"
+          ]
+        },
+        {
+          "file": "src/main/providers/ssh-git-provider.test.ts",
+          "assertions": [
+            "joins remote add cancellation before rejecting",
+            "joins the original add when an old relay lacks cancellation",
+            "captures cancellation RPC failures until the original add settles",
+            "does not dispatch a pre-aborted remote add",
+            "forwards cancellation to remote worktree removal"
+          ]
+        },
+        {
+          "file": "src/relay/git-handler-worktree-cancellation.test.ts",
+          "assertions": [
+            "joins relay Git settlement before acknowledging cancellation",
+            "isolates cancellation by client and accepts legacy add payloads",
+            "rejects duplicate operation IDs before starting a second Git add",
+            "caps concurrent tracked Git additions before starting excess work",
+            "forwards request cancellation through remote worktree removal"
+          ]
+        }
+      ],
+      "evidenceRuns": [
+        {
+          "date": "2026-08-10",
+          "runner": "local",
+          "platform": "macos",
+          "result": "passed",
+          "command": "pnpm exec vitest run --config config/vitest.config.ts src/main/worktree-create-cancellation.test.ts src/main/ipc/worktree-push-target-remote-lifecycle.test.ts src/main/ipc/worktrees.test.ts src/main/ipc/created-worktree-reconciliation.test.ts src/node-server/browserless-automation-dispatcher.test.ts src/node-server/server-signal-shutdown.test.ts src/main/providers/ssh-filesystem-provider-cancellation.test.ts src/main/providers/ssh-git-provider.test.ts src/relay/fs-handler-mutation-settlement.test.ts src/relay/git-handler-worktree-cancellation.test.ts src/main/runtime/orca-runtime.test.ts",
+          "durationSeconds": 11,
+          "summary": "Eleven deterministic files passed 1,463 lifecycle tests with one unrelated platform-specific skip, covering joined local and SSH cancellation, fork-remote lifecycle serialization and compensation, relay Git and filesystem settlement, client isolation, identity-fenced rollback, bounded setup operations, process watchdog, and legacy wire fallback contracts."
+        }
+      ],
+      "runtimeBudget": {
+        "p95Seconds": 30,
+        "scope": "focused dispatcher, runtime, SSH provider, and relay lifecycle contracts"
+      },
+      "flakeHistory": {
+        "status": "not-started",
+        "evidence": "The tests use controlled promises and exact call ordering; focused CI and soak history have not started."
+      },
+      "redGreenEvidence": {
+        "status": "complete",
+        "evidence": "Before signal propagation, dispatcher shutdown only joined an uncancelled create and local or SSH Git could outlive shutdown. Before authority and identity fencing, an add could mutate then reject, empty remote inventory could be mistaken for clean state, a replacement instance could be deleted, and late setup writes could race Git rollback. The candidate joins each authoritative operation, uses a fresh bounded rollback signal, fails closed on unknown settlement, preserves unowned state, and forces a failed process exit if teardown exceeds its absolute deadline."
+      },
+      "performanceBudget": {
+        "required": true,
+        "evidence": "Each signal-bearing create adds one abort listener and one bounded rollback scan; the relay admits at most 64 tracked Git additions and 256 unsettled filesystem mutations, plus at most one settlement RPC per setup mutation. Settlement removes listeners and operation entries, with no polling, retry loop, or global fanout."
+      },
+      "promotionCriteria": [
+        "Collect 100 consecutive focused CI passes or 14 days of soak history.",
+        "Collect physical Windows or WSL and live Docker SSH cancellation evidence.",
+        "Keep joined settlement, client isolation, registration ownership, and old-relay fallback assertions green."
+      ],
+      "knownGaps": [
+        "Physical Windows, WSL, and live Docker SSH process cancellation are not exercised by this local run.",
+        "The headed paired-server path shares runtime code but has no cancellation journey in this gate."
+      ],
+      "demotionRule": "Demote if shutdown can reject before Git or rollback settles, remove an unowned path, leave worktree metadata or PTYs behind, dispatch an agent after cancellation, leak an SSH operation, or break old-client/new-relay compatibility."
     },
     {
       "id": "editor.restored-sibling-owner-reparent",

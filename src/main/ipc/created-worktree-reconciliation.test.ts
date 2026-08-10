@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { findCreatedWorktree } from './created-worktree-reconciliation'
+import {
+  findCreatedWorktree,
+  findCreatedWorktreeForRollback
+} from './created-worktree-reconciliation'
 
 describe('findCreatedWorktree', () => {
   it('prefers the direct path match', () => {
@@ -80,4 +83,57 @@ describe('findCreatedWorktree', () => {
       expect(findCreatedWorktree([created], requested, 'feature', os)).toBe(created)
     }
   )
+})
+
+describe('findCreatedWorktreeForRollback', () => {
+  it('rejects a path occupant on another branch', () => {
+    const replacement = {
+      path: '/home/user/worktrees/feature',
+      branch: 'refs/heads/replacement'
+    }
+
+    expect(
+      findCreatedWorktreeForRollback(
+        [replacement],
+        '/home/user/worktrees/feature',
+        'feature',
+        undefined,
+        'linux'
+      )
+    ).toBeUndefined()
+  })
+
+  it('uses exact branch identity across path aliases', () => {
+    const created = {
+      path: '/canonical/worktrees/feature',
+      branch: 'refs/heads/user/feature'
+    }
+
+    expect(
+      findCreatedWorktreeForRollback(
+        [created],
+        '/visible/worktrees/feature',
+        'user/feature',
+        '/canonical/worktrees/feature',
+        'linux'
+      )
+    ).toBe(created)
+  })
+
+  it('rejects the expected branch at an unrelated path', () => {
+    const unrelated = {
+      path: '/other/worktrees/feature',
+      branch: 'refs/heads/feature'
+    }
+
+    expect(
+      findCreatedWorktreeForRollback(
+        [unrelated],
+        '/home/user/worktrees/feature',
+        'feature',
+        undefined,
+        'linux'
+      )
+    ).toBeUndefined()
+  })
 })

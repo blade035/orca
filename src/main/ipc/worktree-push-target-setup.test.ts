@@ -81,7 +81,10 @@ describe('prepareWorktreePushTargetWithExec', () => {
       'pr-contributor-orca': FORK_HTTPS
     })
 
-    const result = await prepareWorktreePushTargetWithExec(exec, REPO, forkTarget(), () => false)
+    const onRemoteCreated = vi.fn()
+    const result = await prepareWorktreePushTargetWithExec(exec, REPO, forkTarget(), () => false, {
+      onRemoteCreated
+    })
 
     expect(callsMatching(exec, ['remote', 'add'])).toEqual([])
     expect(callsMatching(exec, ['fetch'])).toEqual([
@@ -96,6 +99,62 @@ describe('prepareWorktreePushTargetWithExec', () => {
       remoteName: 'pr-contributor-orca',
       branchName: 'contributor/fix',
       remoteUrl: FORK_SSH
+    })
+    expect(onRemoteCreated).not.toHaveBeenCalled()
+  })
+
+  it('publishes exact ownership before a post-add fetch rejects', async () => {
+    const repoExec = makeRepoExec({ origin: 'git@github.com:stablyai/orca.git' })
+    const order: string[] = []
+    const exec = vi.fn<GitRemoteExec>(async (args, cwd) => {
+      if (args[0] === 'fetch') {
+        order.push('fetch')
+        throw new Error('fetch failed')
+      }
+      return repoExec(args, cwd)
+    })
+    const onRemoteCreated = vi.fn((createdTarget: GitPushTarget) => {
+      order.push('owned')
+      expect(createdTarget).toEqual({
+        remoteName: 'pr-contributor-orca',
+        branchName: 'contributor/fix',
+        remoteUrl: FORK_SSH,
+        remoteCreated: true
+      })
+    })
+
+    await expect(
+      prepareWorktreePushTargetWithExec(exec, REPO, forkTarget(), () => false, {
+        onRemoteCreated
+      })
+    ).rejects.toThrow('fetch failed')
+    expect(order).toEqual(['owned', 'fetch'])
+    expect(onRemoteCreated).toHaveBeenCalledTimes(1)
+  })
+
+  it('publishes exact ownership before remote add mutates then rejects', async () => {
+    const remotes = { origin: 'git@github.com:stablyai/orca.git' }
+    const repoExec = makeRepoExec(remotes)
+    const onRemoteCreated = vi.fn()
+    const exec = vi.fn<GitRemoteExec>(async (args, cwd) => {
+      const result = await repoExec(args, cwd)
+      if (args[0] === 'remote' && args[1] === 'add') {
+        throw new Error('add acknowledgement lost')
+      }
+      return result
+    })
+
+    await expect(
+      prepareWorktreePushTargetWithExec(exec, REPO, forkTarget(), () => false, {
+        onRemoteCreated
+      })
+    ).rejects.toThrow('add acknowledgement lost')
+    expect(remotes).toHaveProperty('pr-contributor-orca', FORK_SSH)
+    expect(onRemoteCreated).toHaveBeenCalledWith({
+      remoteName: 'pr-contributor-orca',
+      branchName: 'contributor/fix',
+      remoteUrl: FORK_SSH,
+      remoteCreated: true
     })
   })
 

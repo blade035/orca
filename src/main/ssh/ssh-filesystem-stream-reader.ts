@@ -1,10 +1,13 @@
 import type { SshChannelMultiplexer } from './ssh-channel-multiplexer'
-import { STREAM_CHUNK_SIZE, JsonRpcErrorCode, RelayErrorCode } from './relay-protocol'
+import { STREAM_CHUNK_SIZE } from './relay-protocol'
 import type { FileReadResult } from '../providers/types'
 import {
   createSshFileStreamInactivityDeadline,
   SSH_FILE_STREAM_INACTIVITY_TIMEOUT_MS
 } from './ssh-file-stream-inactivity-deadline'
+import { subscribeSshFileStreamAbort } from './ssh-file-stream-abort'
+import { StreamProtocolError } from './ssh-filesystem-stream-errors'
+export { isMethodNotFoundError, StreamProtocolError } from './ssh-filesystem-stream-errors'
 
 const RESULT_ENCODING_BASE64 = 'base64'
 const SENTINEL_STREAM_ID = -1
@@ -22,25 +25,12 @@ type StreamMetadataResponse = {
   empty?: boolean
 }
 
-export function isMethodNotFoundError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') {
-    return false
-  }
-  const code = (err as { code?: unknown }).code
-  return code === JsonRpcErrorCode.MethodNotFound
-}
-
-export class StreamProtocolError extends Error {
-  readonly code = RelayErrorCode.StreamProtocolError
-  constructor(message: string) {
-    super(message)
-  }
-}
-
 export async function readFileViaStream(
   mux: SshChannelMultiplexer,
-  filePath: string
+  filePath: string,
+  signal?: AbortSignal
 ): Promise<FileReadResult> {
+  signal?.throwIfAborted()
   // Why: subscribe BEFORE awaiting the metadata response so a chunk arriving
   // immediately after the response cannot beat the listener registration.
   // streamIdRef stays at SENTINEL_STREAM_ID until metadata resolves; chunk
@@ -117,6 +107,14 @@ export async function readFileViaStream(
       inactivity.clear()
       cleanup()
       resolve(value)
+    }
+
+    const unsubscribeAbort = subscribeSshFileStreamAbort(signal, fail)
+    if (unsubscribeAbort) {
+      unsubscribers.push(unsubscribeAbort)
+    }
+    if (settled) {
+      return
     }
 
     const handleChunk = (params: Record<string, unknown>): void => {
@@ -281,7 +279,7 @@ export async function readFileViaStream(
     void mux
       // Why: flowControl declares this client acks each chunk, letting a new
       // relay pace the pump. Old relays ignore the extra param and flood.
-      .request('fs.readFileStream', { filePath, flowControl: 'ack' })
+      .request('fs.readFileStream', { filePath, flowControl: 'ack' }, { signal })
       .then((rawMetadata) => {
         if (settled) {
           return

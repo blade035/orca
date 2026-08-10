@@ -664,8 +664,8 @@ function resetRuntimeTestMocks(): void {
   restoreRemoteWatcherAfterFailedRemovalMock.mockReset().mockResolvedValue(undefined)
   forgetLocalWatcherRemovalSnapshotMock.mockReset()
   forgetRemoteWatcherRemovalSnapshotMock.mockReset()
-  vi.mocked(listWorktrees).mockResolvedValue(MOCK_GIT_WORKTREES)
-  vi.mocked(listWorktreesStrict).mockResolvedValue(MOCK_GIT_WORKTREES)
+  vi.mocked(listWorktrees).mockReset().mockResolvedValue(MOCK_GIT_WORKTREES)
+  vi.mocked(listWorktreesStrict).mockReset().mockResolvedValue(MOCK_GIT_WORKTREES)
   scanLocalRepoWorktreesForResolutionMock
     .mockReset()
     .mockImplementation(async (repoPath: string, options: { wslDistro?: string }) => {
@@ -1285,6 +1285,49 @@ function deferred<T>(): {
     reject = rej
   })
   return { promise, resolve, reject }
+}
+
+function mockCreatedForkRemoteGit(branchName: string): {
+  restore: () => void
+  remoteUrl: () => string | null
+  cleanupSignal: () => AbortSignal | undefined
+} {
+  let forkRemoteUrl: string | null = null
+  let rollbackSignal: AbortSignal | undefined
+  const spy = vi.spyOn(gitRunner, 'gitExecFileAsync').mockImplementation(async (args, options) => {
+    if (args[0] === 'remote' && args.length === 1) {
+      return { stdout: forkRemoteUrl ? 'origin\npr-contributor-orca\n' : 'origin\n', stderr: '' }
+    }
+    if (args[0] === 'remote' && args[1] === 'get-url') {
+      const url =
+        args[2] === 'pr-contributor-orca' ? forkRemoteUrl : 'git@github.com:stablyai/orca.git'
+      if (!url) {
+        throw new Error('remote missing')
+      }
+      return { stdout: `${url}\n`, stderr: '' }
+    }
+    if (args[0] === 'remote' && args[1] === 'add') {
+      forkRemoteUrl = args[3]!
+      return { stdout: '', stderr: '' }
+    }
+    if (args[0] === 'remote' && args[1] === 'remove') {
+      rollbackSignal = options.signal
+      forkRemoteUrl = null
+      return { stdout: '', stderr: '' }
+    }
+    if (args[0] === 'config' && args[1] === '--get-regexp') {
+      return { stdout: '', stderr: '' }
+    }
+    if (args[0] === 'rev-parse' && args.includes(`refs/heads/${branchName}^{commit}`)) {
+      throw new Error('branch not found')
+    }
+    return { stdout: 'base-sha\n', stderr: '' }
+  })
+  return {
+    restore: () => spy.mockRestore(),
+    remoteUrl: () => forkRemoteUrl,
+    cleanupSignal: () => rollbackSignal
+  }
 }
 
 function createStaleRuntimeWorktreeStore(
@@ -4209,6 +4252,316 @@ describe('OrcaRuntimeService', () => {
     expect(notifier.worktreesChanged).toHaveBeenCalledWith('folder-repo')
   })
 
+  it('joins local rollback when add mutates then rejects cancellation', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const worktreePath = '/tmp/workspaces/cancelled-create'
+    const gitSpy = vi.spyOn(gitRunner, 'gitExecFileAsync').mockImplementation(async (args) => {
+      if (args[0] === 'remote') {
+        return { stdout: '', stderr: '' }
+      }
+      if (args[0] === 'rev-parse' && args.includes('refs/heads/cancelled-create^{commit}')) {
+        throw new Error('branch not found')
+      }
+      return { stdout: 'base-sha\n', stderr: '' }
+    })
+    computeWorktreePathMock.mockReturnValue(worktreePath)
+    ensurePathWithinWorkspaceMock.mockReturnValue(worktreePath)
+    const registeredWorktree = {
+      path: worktreePath,
+      head: 'base-sha',
+      branch: 'refs/heads/cancelled-create',
+      isBare: false,
+      isMainWorktree: false
+    }
+    vi.mocked(listWorktreesStrict).mockResolvedValueOnce([registeredWorktree])
+    const controller = new AbortController()
+    let addSignal: AbortSignal | undefined
+    vi.mocked(addWorktree).mockImplementationOnce(async (...args) => {
+      addSignal = args[6]?.signal
+      controller.abort()
+      const error = new Error('cancelled after registration')
+      error.name = 'AbortError'
+      throw error
+    })
+    const rollback = deferred<Record<string, never>>()
+    vi.mocked(removeWorktree).mockImplementationOnce(() => rollback.promise)
+    let settled = false
+    const create = runtime
+      .createManagedWorktree({
+        repoSelector: 'id:repo-1',
+        name: 'cancelled-create',
+        baseBranch: 'main',
+        signal: controller.signal
+      })
+      .finally(() => {
+        settled = true
+      })
+
+    await vi.waitFor(() => expect(addWorktree).toHaveBeenCalledTimes(1))
+    expect(addSignal).toBe(controller.signal)
+    await vi.waitFor(() => expect(removeWorktree).toHaveBeenCalledTimes(1))
+    expect(settled).toBe(false)
+
+    rollback.resolve({})
+    await expect(create).rejects.toMatchObject({ name: 'AbortError' })
+    expect(removeWorktree).toHaveBeenCalledWith(
+      TEST_REPO_PATH,
+      worktreePath,
+      true,
+      expect.objectContaining({
+        deleteBranch: true,
+        forceBranchDelete: true,
+        knownRemovedWorktree: registeredWorktree,
+        signal: expect.any(AbortSignal)
+      })
+    )
+    gitSpy.mockRestore()
+  })
+
+  it('removes an exact newly added fork remote when preparation fetch fails', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const worktreePath = '/tmp/workspaces/fork-prepare-failure'
+    const forkUrl = 'git@github.com:contributor/orca.git'
+    let forkRemoteUrl: string | null = null
+    let cleanupSignal: AbortSignal | undefined
+    const gitSpy = vi
+      .spyOn(gitRunner, 'gitExecFileAsync')
+      .mockImplementation(async (args, options) => {
+        if (args[0] === 'remote' && args.length === 1) {
+          return {
+            stdout: forkRemoteUrl ? 'origin\npr-contributor-orca\n' : 'origin\n',
+            stderr: ''
+          }
+        }
+        if (args[0] === 'remote' && args[1] === 'get-url') {
+          const url =
+            args[2] === 'pr-contributor-orca' ? forkRemoteUrl : 'git@github.com:stablyai/orca.git'
+          if (!url) {
+            throw new Error('remote missing')
+          }
+          return { stdout: `${url}\n`, stderr: '' }
+        }
+        if (args[0] === 'remote' && args[1] === 'add') {
+          forkRemoteUrl = args[3]!
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'fetch' && args[1] === 'pr-contributor-orca') {
+          throw new Error('fork fetch failed')
+        }
+        if (args[0] === 'config' && args[1] === '--get-regexp') {
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'remote' && args[1] === 'remove') {
+          cleanupSignal = options.signal
+          forkRemoteUrl = null
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'rev-parse' && args.includes('refs/heads/fork-prepare-failure^{commit}')) {
+          throw new Error('branch not found')
+        }
+        return { stdout: 'base-sha\n', stderr: '' }
+      })
+    computeWorktreePathMock.mockReturnValue(worktreePath)
+    ensurePathWithinWorkspaceMock.mockReturnValue(worktreePath)
+
+    try {
+      await expect(
+        runtime.createManagedWorktree({
+          repoSelector: 'id:repo-1',
+          name: 'fork-prepare-failure',
+          baseBranch: 'main',
+          pushTarget: {
+            remoteName: 'pr-contributor-orca',
+            branchName: 'contributor/fix',
+            remoteUrl: forkUrl
+          }
+        })
+      ).rejects.toThrow('fork fetch failed')
+
+      expect(forkRemoteUrl).toBeNull()
+      expect(cleanupSignal).toBeInstanceOf(AbortSignal)
+      expect(addWorktree).not.toHaveBeenCalled()
+      expect(gitSpy).toHaveBeenCalledWith(
+        ['remote', 'remove', 'pr-contributor-orca'],
+        expect.objectContaining({ cwd: TEST_REPO_PATH, signal: cleanupSignal })
+      )
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('reconciles cancellation before local worktree registration as already rolled back', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const worktreePath = '/tmp/workspaces/unregistered-cancelled-create'
+    const gitSpy = vi.spyOn(gitRunner, 'gitExecFileAsync').mockImplementation(async (args) => {
+      if (args[0] === 'remote') {
+        return { stdout: '', stderr: '' }
+      }
+      if (
+        args[0] === 'rev-parse' &&
+        args.includes('refs/heads/unregistered-cancelled-create^{commit}')
+      ) {
+        throw new Error('branch not found')
+      }
+      return { stdout: 'base-sha\n', stderr: '' }
+    })
+    computeWorktreePathMock.mockReturnValue(worktreePath)
+    ensurePathWithinWorkspaceMock.mockReturnValue(worktreePath)
+    vi.mocked(addWorktree).mockImplementationOnce(async (...args) => {
+      const signal = args[6]?.signal
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => {
+            const error = new Error('cancelled')
+            error.name = 'AbortError'
+            reject(error)
+          },
+          { once: true }
+        )
+      })
+      return {}
+    })
+    try {
+      const controller = new AbortController()
+      const create = runtime.createManagedWorktree({
+        repoSelector: 'id:repo-1',
+        name: 'unregistered-cancelled-create',
+        baseBranch: 'main',
+        signal: controller.signal
+      })
+
+      await vi.waitFor(() => expect(addWorktree).toHaveBeenCalledTimes(1))
+      controller.abort()
+
+      await expect(create).rejects.toMatchObject({ name: 'AbortError' })
+      expect(listWorktreesStrict).toHaveBeenCalledTimes(1)
+      expect(removeWorktree).not.toHaveBeenCalled()
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('removes a created fork remote when cancellation leaves no worktree row', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const worktreePath = '/tmp/workspaces/unregistered-fork-create'
+    const forkUrl = 'git@github.com:contributor/orca.git'
+    let forkRemoteUrl: string | null = null
+    let cleanupSignal: AbortSignal | undefined
+    const gitSpy = vi
+      .spyOn(gitRunner, 'gitExecFileAsync')
+      .mockImplementation(async (args, options) => {
+        if (args[0] === 'remote' && args.length === 1) {
+          return {
+            stdout: forkRemoteUrl ? 'origin\npr-contributor-orca\n' : 'origin\n',
+            stderr: ''
+          }
+        }
+        if (args[0] === 'remote' && args[1] === 'get-url') {
+          const url =
+            args[2] === 'pr-contributor-orca' ? forkRemoteUrl : 'git@github.com:stablyai/orca.git'
+          if (!url) {
+            throw new Error('remote missing')
+          }
+          return { stdout: `${url}\n`, stderr: '' }
+        }
+        if (args[0] === 'remote' && args[1] === 'add') {
+          forkRemoteUrl = args[3]!
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'remote' && args[1] === 'remove') {
+          cleanupSignal = options.signal
+          forkRemoteUrl = null
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'config' && args[1] === '--get-regexp') {
+          return { stdout: '', stderr: '' }
+        }
+        if (
+          args[0] === 'rev-parse' &&
+          args.includes('refs/heads/unregistered-fork-create^{commit}')
+        ) {
+          throw new Error('branch not found')
+        }
+        return { stdout: 'base-sha\n', stderr: '' }
+      })
+    computeWorktreePathMock.mockReturnValue(worktreePath)
+    ensurePathWithinWorkspaceMock.mockReturnValue(worktreePath)
+    vi.mocked(listWorktreesStrict).mockResolvedValueOnce([])
+    vi.mocked(addWorktree).mockImplementationOnce(async (...args) => {
+      const signal = args[6]?.signal
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => {
+            const error = new Error('cancelled')
+            error.name = 'AbortError'
+            reject(error)
+          },
+          { once: true }
+        )
+      })
+      return {}
+    })
+
+    try {
+      const controller = new AbortController()
+      const create = runtime.createManagedWorktree({
+        repoSelector: 'id:repo-1',
+        name: 'unregistered-fork-create',
+        baseBranch: 'main',
+        signal: controller.signal,
+        pushTarget: {
+          remoteName: 'pr-contributor-orca',
+          branchName: 'contributor/fix',
+          remoteUrl: forkUrl
+        }
+      })
+
+      await vi.waitFor(() => expect(addWorktree).toHaveBeenCalledTimes(1))
+      expect(forkRemoteUrl).toBe(forkUrl)
+      controller.abort()
+
+      await expect(create).rejects.toMatchObject({ name: 'AbortError' })
+      expect(removeWorktree).not.toHaveBeenCalled()
+      expect(forkRemoteUrl).toBeNull()
+      expect(cleanupSignal).toBeInstanceOf(AbortSignal)
+    } finally {
+      gitSpy.mockRestore()
+    }
+  })
+
+  it('removes a created fork remote when local worktree add fails before registration', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const worktreePath = '/tmp/workspaces/failed-fork-create'
+    const forkGit = mockCreatedForkRemoteGit('failed-fork-create')
+    computeWorktreePathMock.mockReturnValue(worktreePath)
+    ensurePathWithinWorkspaceMock.mockReturnValue(worktreePath)
+    vi.mocked(listWorktreesStrict).mockResolvedValueOnce([])
+    vi.mocked(addWorktree).mockRejectedValueOnce(new Error('add failed'))
+
+    try {
+      await expect(
+        runtime.createManagedWorktree({
+          repoSelector: 'id:repo-1',
+          name: 'failed-fork-create',
+          baseBranch: 'main',
+          pushTarget: {
+            remoteName: 'pr-contributor-orca',
+            branchName: 'contributor/fix',
+            remoteUrl: 'git@github.com:contributor/orca.git'
+          }
+        })
+      ).rejects.toThrow('add failed')
+
+      expect(removeWorktree).not.toHaveBeenCalled()
+      expect(forkGit.remoteUrl()).toBeNull()
+      expect(forkGit.cleanupSignal()).toBeInstanceOf(AbortSignal)
+    } finally {
+      forkGit.restore()
+    }
+  })
+
   it('refreshes runtime remote-tracking bases before creating local worktrees', async () => {
     const runtime = new OrcaRuntimeService(store)
     const refresh = deferred<{ stdout: string; stderr: string }>()
@@ -5301,6 +5654,261 @@ describe('OrcaRuntimeService', () => {
     })
     expect(addWorktree).not.toHaveBeenCalled()
     expect(listWorktrees).not.toHaveBeenCalled()
+  })
+
+  it('reconciles ambiguous SSH add rejection and fails closed on unavailable inventory', async () => {
+    setPlatform('darwin')
+    const removeWorktreeMeta = vi.fn()
+    const removeWorktreeLineage = vi.fn()
+    const removeWorkspaceLineage = vi.fn()
+    const remoteStore = {
+      ...store,
+      getRepos: () => [
+        {
+          id: TEST_REPO_ID,
+          path: '/private/tmp/cancel-repo',
+          displayName: 'repo',
+          badgeColor: 'blue',
+          addedAt: 1,
+          connectionId: 'ssh-1'
+        }
+      ],
+      removeWorktreeMeta,
+      removeWorktreeLineage,
+      removeWorkspaceLineage
+    }
+    let addSignal: AbortSignal | undefined
+    let addTarget = ''
+    const addStarted = deferred<void>()
+    const provider = {
+      getHostPlatform: vi.fn(() => ({ os: 'linux' }) as never),
+      exec: vi.fn(async (args: string[]) => {
+        if (args[0] === 'config') {
+          return { stdout: 'Remote User\n', stderr: '' }
+        }
+        if (args[0] === 'branch') {
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'symbolic-ref') {
+          return { stdout: 'origin/main\n', stderr: '' }
+        }
+        if (isOriginMainBaseRefProbe(args)) {
+          return { stdout: 'main-sha\n', stderr: '' }
+        }
+        if (args[0] === 'fetch') {
+          return { stdout: '', stderr: '' }
+        }
+        throw new Error(`unexpected git call: ${args.join(' ')}`)
+      }),
+      addWorktree: vi.fn(
+        async (
+          _repoPath: string,
+          _branchName: string,
+          targetDir: string,
+          options: { signal?: AbortSignal }
+        ) => {
+          addTarget = targetDir
+          addSignal = options.signal
+          addStarted.resolve()
+          await new Promise<void>((_resolve, reject) => {
+            addSignal?.addEventListener(
+              'abort',
+              () => {
+                const error = new Error('cancelled')
+                error.name = 'AbortError'
+                reject(error)
+              },
+              { once: true }
+            )
+          })
+        }
+      ),
+      listWorktrees: vi.fn(async () => [
+        {
+          path: addTarget,
+          head: 'main-sha',
+          branch: 'refs/heads/cancelled-remote-create',
+          isBare: false,
+          isMainWorktree: false
+        }
+      ]),
+      removeWorktree: vi.fn().mockResolvedValue(undefined)
+    }
+    registerSshGitProvider('ssh-1', provider as never)
+    getActiveMultiplexerMock.mockReturnValue({ request: muxRequestMock, notify: vi.fn() })
+    const runtime = new OrcaRuntimeService(remoteStore as never)
+    const controller = new AbortController()
+
+    try {
+      const create = runtime.createManagedWorktree({
+        repoSelector: TEST_REPO_ID,
+        name: 'cancelled-remote-create',
+        signal: controller.signal
+      })
+      await addStarted.promise
+      expect(addSignal).toBe(controller.signal)
+
+      controller.abort()
+
+      await expect(create).rejects.toMatchObject({ name: 'AbortError' })
+      expect(provider.listWorktrees).toHaveBeenCalledTimes(1)
+      expect(provider.removeWorktree).toHaveBeenCalledWith(
+        addTarget,
+        true,
+        expect.objectContaining({ forceBranchDelete: true })
+      )
+      expect(removeWorktreeMeta).not.toHaveBeenCalled()
+      expect(removeWorktreeLineage).not.toHaveBeenCalled()
+      expect(removeWorkspaceLineage).not.toHaveBeenCalled()
+
+      vi.mocked(provider.listWorktrees).mockImplementationOnce(async () => [
+        {
+          path: addTarget.replace('/private/tmp/', '/tmp/'),
+          head: 'main-sha',
+          branch: 'refs/heads/linux-path-owner',
+          isBare: false,
+          isMainWorktree: false
+        }
+      ])
+      vi.mocked(provider.removeWorktree).mockClear()
+      const aliasController = new AbortController()
+      const aliasCreate = runtime.createManagedWorktree({
+        repoSelector: TEST_REPO_ID,
+        name: 'linux-path-owner',
+        signal: aliasController.signal
+      })
+      await vi.waitFor(() => expect(provider.addWorktree).toHaveBeenCalledTimes(2))
+      aliasController.abort()
+
+      await expect(aliasCreate).rejects.toMatchObject({
+        message: 'Cancelled worktree creation rollback failed.'
+      })
+      expect(provider.getHostPlatform).toHaveBeenCalled()
+      expect(provider.removeWorktree).not.toHaveBeenCalled()
+
+      vi.mocked(provider.listWorktrees).mockResolvedValueOnce([])
+      vi.mocked(provider.removeWorktree).mockClear()
+      const secondController = new AbortController()
+      const secondCreate = runtime.createManagedWorktree({
+        repoSelector: TEST_REPO_ID,
+        name: 'unknown-inventory',
+        signal: secondController.signal
+      })
+      await vi.waitFor(() => expect(provider.addWorktree).toHaveBeenCalledTimes(3))
+      secondController.abort()
+
+      await expect(secondCreate).rejects.toMatchObject({
+        message: 'Cancelled worktree creation rollback failed.'
+      })
+      expect(provider.removeWorktree).not.toHaveBeenCalled()
+    } finally {
+      unregisterSshGitProvider('ssh-1')
+    }
+  })
+
+  it('cancels post-add SSH work and rolls back with a fresh bounded signal', async () => {
+    const remoteStore = {
+      ...store,
+      getRepos: () => [
+        {
+          id: TEST_REPO_ID,
+          path: '/remote/cancel-after-add',
+          displayName: 'repo',
+          badgeColor: 'blue',
+          addedAt: 1,
+          connectionId: 'ssh-1'
+        }
+      ]
+    }
+    const created = {
+      path: '/remote/cancel-after-add-feature',
+      head: 'main-sha',
+      branch: 'refs/heads/feature',
+      isBare: false,
+      isMainWorktree: false
+    }
+    const postAddListStarted = deferred<void>()
+    let postAddSignal: AbortSignal | undefined
+    let rollbackSignal: AbortSignal | undefined
+    let listCallCount = 0
+    const provider = {
+      exec: vi.fn(async (args: string[]) => {
+        if (args[0] === 'config') {
+          return { stdout: 'Remote User\n', stderr: '' }
+        }
+        if (args[0] === 'branch') {
+          return { stdout: '', stderr: '' }
+        }
+        if (args[0] === 'symbolic-ref') {
+          return { stdout: 'origin/main\n', stderr: '' }
+        }
+        if (isOriginMainBaseRefProbe(args)) {
+          return { stdout: 'main-sha\n', stderr: '' }
+        }
+        if (args[0] === 'fetch') {
+          return { stdout: '', stderr: '' }
+        }
+        throw new Error(`unexpected git call: ${args.join(' ')}`)
+      }),
+      addWorktree: vi.fn(
+        async (
+          _repoPath: string,
+          _branchName: string,
+          _targetDir: string,
+          _options: { signal?: AbortSignal }
+        ) => undefined
+      ),
+      listWorktrees: vi.fn(async (_repoPath: string, options?: { signal?: AbortSignal }) => {
+        listCallCount += 1
+        if (listCallCount > 1) {
+          rollbackSignal = options?.signal
+          return [created]
+        }
+        postAddSignal = options?.signal
+        postAddListStarted.resolve()
+        await new Promise<void>((_resolve, reject) => {
+          postAddSignal?.addEventListener(
+            'abort',
+            () => {
+              const error = new Error('cancelled')
+              error.name = 'AbortError'
+              reject(error)
+            },
+            { once: true }
+          )
+        })
+        return []
+      }),
+      removeWorktree: vi.fn().mockResolvedValue(undefined)
+    }
+    registerSshGitProvider('ssh-1', provider as never)
+    getActiveMultiplexerMock.mockReturnValue({ request: muxRequestMock, notify: vi.fn() })
+    const runtime = new OrcaRuntimeService(remoteStore as never)
+    const controller = new AbortController()
+
+    try {
+      const create = runtime.createManagedWorktree({
+        repoSelector: TEST_REPO_ID,
+        name: 'feature',
+        signal: controller.signal
+      })
+      await postAddListStarted.promise
+      expect(postAddSignal).toBe(controller.signal)
+
+      controller.abort()
+
+      await expect(create).rejects.toMatchObject({ name: 'AbortError' })
+      expect(rollbackSignal).toBeInstanceOf(AbortSignal)
+      expect(rollbackSignal).not.toBe(controller.signal)
+      expect(rollbackSignal?.aborted).toBe(false)
+      expect(provider.removeWorktree).toHaveBeenCalledWith(
+        created.path,
+        true,
+        expect.objectContaining({ signal: rollbackSignal })
+      )
+    } finally {
+      unregisterSshGitProvider('ssh-1')
+    }
   })
 
   it('records lineage for SSH-backed CLI-created worktrees', async () => {
@@ -46154,6 +46762,41 @@ describe('OrcaRuntimeService', () => {
     })
   }
 
+  it('rechecks cancellation instance identity after removal inventory settles', async () => {
+    let meta = makeWorktreeMeta({ instanceId: 'created-instance' })
+    const runtimeStore = {
+      ...store,
+      getAllWorktreeMeta: () => ({ [TEST_WORKTREE_ID]: meta }),
+      getWorktreeMeta: () => meta
+    }
+    const runtime = createWorktreeRemovalRuntime(runtimeStore)
+    const inventory = deferred<Awaited<ReturnType<typeof listWorktreesStrict>>>()
+    vi.mocked(listWorktreesStrict).mockImplementationOnce(() => inventory.promise)
+    const removal = runtime.removeManagedWorktree(
+      TEST_WORKTREE_ID,
+      true,
+      false,
+      true,
+      undefined,
+      'created-instance'
+    )
+    await vi.waitFor(() => expect(listWorktreesStrict).toHaveBeenCalledTimes(1))
+
+    meta = makeWorktreeMeta({ instanceId: 'replacement-instance' })
+    inventory.resolve([
+      {
+        path: TEST_WORKTREE_PATH,
+        head: 'head',
+        branch: 'refs/heads/main',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+
+    await expect(removal).rejects.toThrow('Worktree identity changed during deletion')
+    expect(removeWorktree).not.toHaveBeenCalled()
+  })
+
   it('skips archive hooks for CLI worktree removal by default', async () => {
     const runtime = createWorktreeRemovalRuntime()
     vi.mocked(getEffectiveHooks).mockReturnValue({
@@ -47157,6 +47800,62 @@ describe('OrcaRuntimeService', () => {
       expect(notifier.worktreesChanged).toHaveBeenCalledWith(TEST_REPO_ID)
     } finally {
       // Why: Windows can keep a just-inspected git admin dir busy briefly.
+      await rm(parentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+
+  it('preserves a replacement instance while orphan cleanup waits for PTY teardown', async () => {
+    const parentDir = await mkdtemp(join(tmpdir(), 'orca-runtime-orphan-race-'))
+    const repoPath = join(parentDir, 'repo')
+    const orphanPath = join(parentDir, 'orphan')
+    const adminWorktreePath = join(repoPath, '.git', 'worktrees', 'orphan')
+    const worktreeId = `${TEST_REPO_ID}::${orphanPath}`
+    await mkdir(orphanPath, { recursive: true })
+    await mkdir(adminWorktreePath, { recursive: true })
+    await writeFile(join(orphanPath, '.git'), `gitdir: ${adminWorktreePath}\n`)
+    await writeFile(join(adminWorktreePath, 'gitdir'), `${join(orphanPath, '.git')}\n`)
+    const { runtimeStore, removeWorktreeMeta } = createStaleRuntimeWorktreeStore(worktreeId, {
+      instanceId: 'created-instance',
+      createdAt: Date.now()
+    })
+    const runtimeStoreWithRepoPath = {
+      ...runtimeStore,
+      getRepo: (id: string) =>
+        id === TEST_REPO_ID
+          ? {
+              id: TEST_REPO_ID,
+              path: repoPath,
+              displayName: 'repo',
+              badgeColor: 'blue',
+              addedAt: 1
+            }
+          : undefined
+    }
+    const inventory = deferred<{ id: string; cwd: string; title: string }[]>()
+    const listProcesses = vi.fn(() => inventory.promise)
+    const runtime = new OrcaRuntimeService(runtimeStoreWithRepoPath as never, undefined, {
+      getLocalProvider: () => ({ listProcesses, shutdown: vi.fn(async () => {}) }) as never
+    })
+
+    try {
+      vi.mocked(listWorktreesStrict).mockResolvedValue([])
+      const removal = runtime.removeManagedWorktree(
+        worktreeId,
+        true,
+        false,
+        true,
+        undefined,
+        'created-instance'
+      )
+      await vi.waitFor(() => expect(listProcesses).toHaveBeenCalled())
+
+      runtimeStore.setWorktreeMeta(worktreeId, { instanceId: 'replacement-instance' })
+      inventory.resolve([])
+
+      await expect(removal).rejects.toThrow('Worktree identity changed during deletion')
+      await expect(lstat(orphanPath)).resolves.toBeTruthy()
+      expect(removeWorktreeMeta).not.toHaveBeenCalled()
+    } finally {
       await rm(parentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
     }
   })
