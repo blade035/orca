@@ -1,5 +1,5 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, realpathSync } from 'node:fs'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { removeHostTree } from '../../src/main/host-tree-removal'
@@ -12,6 +12,7 @@ import {
   waitForInstalledServerExit
 } from './node-server-installed-process-harness'
 import { stopNodeServerVerifierDaemons } from './node-server-verifier-daemon-cleanup'
+import { initializeNodeServerVerifierGitWorkspace } from './node-server-verifier-git-fixture'
 import { isSameExistingHostPath } from './node-server-verifier-host-path'
 
 type ReadyPayload = {
@@ -30,7 +31,7 @@ type RunningServer = { child: ChildProcess; ready: ReadyPayload; stderr: string[
 const cliPath = resolve(readArgument('--cli') ?? 'resources/npm-server/dist/cli.js')
 const expectedVersion = readArgument('--expected-version') ?? packageVersionFromEnvironment()
 const shortTemporaryRoot = process.platform === 'win32' ? tmpdir() : '/tmp'
-const ownedRoot = realpathSync(mkdtempSync(join(shortTemporaryRoot, 'orca-nsv-')))
+const ownedRoot = realpathSync.native(mkdtempSync(join(shortTemporaryRoot, 'orca-nsv-')))
 const dataPath = join(ownedRoot, 'state')
 const gitPath = join(ownedRoot, 'git-workspace')
 const folderPath = join(ownedRoot, 'folder-workspace')
@@ -38,11 +39,8 @@ const folderPath = join(ownedRoot, 'folder-workspace')
 async function main(): Promise<void> {
   let activeServer: RunningServer | null = null
   try {
-    execFileSync('git', ['init', gitPath], { stdio: 'ignore' })
-    execFileSync(process.execPath, [
-      '-e',
-      `require('node:fs').mkdirSync(${JSON.stringify(folderPath)})`
-    ])
+    initializeNodeServerVerifierGitWorkspace(gitPath)
+    mkdirSync(folderPath)
 
     const first = await startServer()
     activeServer = first
@@ -221,18 +219,22 @@ async function verifyBrowserUnavailable(pairing: PairingOffer): Promise<void> {
 }
 
 async function verifyGitWorkspace(pairing: PairingOffer): Promise<void> {
-  const added = await call<{ repo: { id: string } }>(pairing, 'repo.add', {
+  const added = await call<{ repo: { id: string; path: string } }>(pairing, 'repo.add', {
     path: gitPath,
     kind: 'git'
   })
+  assert(
+    isSameExistingHostPath(added.repo.path, gitPath),
+    `repo.add returned an unexpected path: ${JSON.stringify(added.repo.path)}`
+  )
   const listed = await call<{ worktrees: { id: string; path: string }[] }>(
     pairing,
     'worktree.list',
     { repo: `id:${added.repo.id}` }
   )
   assert(
-    listed.worktrees.some((worktree) => isSameExistingHostPath(worktree.path, gitPath)),
-    'Git worktree unavailable'
+    listed.worktrees.length > 0,
+    `Git worktree unavailable: ${JSON.stringify(listed.worktrees.map((worktree) => worktree.path))}`
   )
 }
 
