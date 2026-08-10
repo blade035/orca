@@ -4385,6 +4385,9 @@ describe('OrcaRuntimeService', () => {
         ['remote', 'remove', 'pr-contributor-orca'],
         expect.objectContaining({ cwd: TEST_REPO_PATH, signal: cleanupSignal })
       )
+      expect(
+        gitSpy.mock.calls.filter(([gitArgs]) => gitArgs[0] === 'remote' && gitArgs[1] === 'remove')
+      ).toHaveLength(1)
     } finally {
       gitSpy.mockRestore()
     }

@@ -9,7 +9,7 @@ export async function stopNodeServerVerifierDaemons(dataPath: string): Promise<v
     return
   }
   const shutdowns: Promise<void>[] = []
-  for (const entry of readdirSync(daemonPath)) {
+  for (const entry of readdirSync(daemonPath).sort()) {
     const match = /^daemon-v(\d+)\.pid$/.exec(entry)
     if (!match) {
       continue

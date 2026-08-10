@@ -1050,7 +1050,6 @@ export async function prepareWorktreePushTarget(
   repoId?: string,
   gitOptions: { wslDistro?: string; signal?: AbortSignal } = {},
   options: {
-    createdWorktreeId?: string
     onRemoteCreated?: (createdTarget: GitPushTarget) => void
     onRemoteLifecycleAcquired?: (release: () => void) => void
   } = {}
@@ -1059,7 +1058,6 @@ export async function prepareWorktreePushTarget(
     localPushTargetRemoteLifecycleScope(repoPath, repoId, gitOptions.wslDistro)
   )
   let lifecycleTransferred = false
-  let createdRemote: GitPushTarget | null = null
   try {
     if (options.onRemoteLifecycleAcquired) {
       options.onRemoteLifecycleAcquired(releaseLifecycle)
@@ -1079,34 +1077,9 @@ export async function prepareWorktreePushTarget(
             )
           : false,
       {
-        onRemoteCreated: (createdTarget) => {
-          createdRemote = createdTarget
-          options.onRemoteCreated?.(createdTarget)
-        }
+        onRemoteCreated: options.onRemoteCreated
       }
     )
-  } catch (error) {
-    if (createdRemote && store && options.createdWorktreeId) {
-      try {
-        const rollbackSignal = createWorktreeRollbackSignal()
-        await cleanupUnusedWorktreePushTargetRemoteWithExec(
-          repoPath,
-          options.createdWorktreeId,
-          createdRemote,
-          store,
-          (args, cwd) =>
-            gitExecFileAsync(args, {
-              cwd,
-              ...gitOptions,
-              signal: rollbackSignal
-            })
-        )
-        createdRemote = null
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Fork remote preparation rollback failed.')
-      }
-    }
-    throw error
   } finally {
     if (!lifecycleTransferred) {
       releaseLifecycle()
@@ -1188,7 +1161,6 @@ async function prepareWorktreePushTargetSsh(
   repoId?: string,
   options: {
     signal?: AbortSignal
-    createdWorktreeId?: string
     onRemoteCreated?: (createdTarget: GitPushTarget) => void
     onRemoteLifecycleAcquired?: (release: () => void) => void
   } = {}
@@ -1201,7 +1173,6 @@ async function prepareWorktreePushTargetSsh(
   const { remoteCreated: _ignoredRemoteCreated, ...sanitizedTarget } = target
   let remoteName = target.remoteName
   let remoteCreated = false
-  let createdRemote: GitPushTarget | null = null
   try {
     if (options.onRemoteLifecycleAcquired) {
       options.onRemoteLifecycleAcquired(releaseLifecycle)
@@ -1229,8 +1200,7 @@ async function prepareWorktreePushTargetSsh(
       } else {
         remoteName = await ensureUniqueRemoteName(execGit, repoPath, target.remoteName)
         remoteCreated = true
-        createdRemote = { ...sanitizedTarget, remoteName, remoteCreated: true }
-        options.onRemoteCreated?.(createdRemote)
+        options.onRemoteCreated?.({ ...sanitizedTarget, remoteName, remoteCreated: true })
         await provider.exec(['remote', 'add', remoteName, target.remoteUrl], repoPath, {
           signal: options.signal
         })
@@ -1244,23 +1214,6 @@ async function prepareWorktreePushTargetSsh(
       { signal: options.signal }
     )
     return { ...sanitizedTarget, remoteName, ...(remoteCreated ? { remoteCreated: true } : {}) }
-  } catch (error) {
-    if (createdRemote && store && options.createdWorktreeId) {
-      try {
-        const rollbackSignal = createWorktreeRollbackSignal()
-        await cleanupUnusedWorktreePushTargetRemoteWithExec(
-          repoPath,
-          options.createdWorktreeId,
-          createdRemote,
-          store,
-          (args, cwd) => provider.exec(args, cwd, { signal: rollbackSignal })
-        )
-        createdRemote = null
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], 'Remote fork preparation rollback failed.')
-      }
-    }
-    throw error
   } finally {
     if (!lifecycleTransferred) {
       releaseLifecycle()
@@ -2064,7 +2017,6 @@ async function createRemoteWorktreeOperation(
       repo.id,
       {
         signal,
-        createdWorktreeId: rollbackWorktreeId,
         onRemoteCreated: (createdTarget) => {
           createdPushTargetRemote = createdTarget
         },
@@ -2729,7 +2681,6 @@ async function createLocalWorktreeOperation(
       repo.id,
       localWorktreeGitOptions,
       {
-        createdWorktreeId,
         onRemoteCreated: (createdTarget) => {
           createdPushTargetRemote = createdTarget
         },

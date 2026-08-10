@@ -38,8 +38,8 @@ describe('stopNodeServerVerifierDaemons', () => {
     temporaryPaths.push(dataPath)
     const daemonPath = join(dataPath, 'daemon')
     mkdirSync(daemonPath)
-    writeFileSync(join(daemonPath, 'daemon-v4.pid'), JSON.stringify({ pid: 4101 }))
     writeFileSync(join(daemonPath, 'daemon-v5.pid'), JSON.stringify({ pid: 5101 }))
+    writeFileSync(join(daemonPath, 'daemon-v4.pid'), JSON.stringify({ pid: 4101 }))
     vi.spyOn(process, 'kill').mockImplementation(() => true)
 
     const outcome = stopNodeServerVerifierDaemons(dataPath).catch((error: unknown) => error)

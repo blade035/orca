@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { setGlobalProxyFromEnv } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -171,6 +172,32 @@ export const webContents = {
   getAllWebContents: () => []
 }
 
+class NodeHostProxySession {
+  async resolveProxy(): Promise<'DIRECT'> {
+    return 'DIRECT'
+  }
+
+  async setProxy(config: {
+    mode?: 'system' | 'fixed_servers'
+    proxyRules?: string
+    proxyBypassRules?: string
+  }): Promise<void> {
+    if (config.mode === 'fixed_servers' && config.proxyRules) {
+      setGlobalProxyFromEnv({
+        HTTP_PROXY: config.proxyRules,
+        HTTPS_PROXY: config.proxyRules,
+        NO_PROXY: config.proxyBypassRules?.replaceAll(';', ',') ?? ''
+      })
+      return
+    }
+    setGlobalProxyFromEnv(process.env)
+  }
+
+  async closeAllConnections(): Promise<void> {}
+}
+
+const nodeHostDefaultSession = new NodeHostProxySession()
+
 export const safeStorage = {
   isEncryptionAvailable: () => false,
   encryptString: () => {
@@ -236,8 +263,8 @@ export const screen = {
 }
 
 export const session = {
-  defaultSession: null,
-  fromPartition: () => null
+  defaultSession: nodeHostDefaultSession,
+  fromPartition: () => nodeHostDefaultSession
 }
 
 export const protocol = { registerSchemesAsPrivileged: () => {} }

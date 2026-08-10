@@ -31,9 +31,8 @@ describe('RemoteServerFields', () => {
       />
     )
 
-    expect(markup.indexOf('npx @stablyai/orca@latest')).toBeLessThan(
-      markup.indexOf('add-server-name')
-    )
+    expect(markup).toContain('npx @stablyai/orca@rc')
+    expect(markup.indexOf('npx @stablyai/orca@rc')).toBeLessThan(markup.indexOf('add-server-name'))
     expect(markup).toContain('Copy server command')
   })
 

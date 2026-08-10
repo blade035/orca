@@ -2126,6 +2126,11 @@ describe('registerWorktreeHandlers', () => {
       ['remote', 'remove', 'pr-contributor-orca'],
       expect.objectContaining({ cwd: '/workspace/repo', signal: cleanupSignal })
     )
+    expect(
+      gitExecFileAsyncMock.mock.calls.filter(
+        ([gitArgs]) => gitArgs[0] === 'remote' && gitArgs[1] === 'remove'
+      )
+    ).toHaveLength(1)
   })
 
   it('removes a local fork remote when add mutates then rejects', async () => {
@@ -2180,6 +2185,11 @@ describe('registerWorktreeHandlers', () => {
       ['remote', 'remove', 'pr-contributor-orca'],
       expect.objectContaining({ cwd: '/workspace/repo', signal: cleanupSignal })
     )
+    expect(
+      gitExecFileAsyncMock.mock.calls.filter(
+        ([gitArgs]) => gitArgs[0] === 'remote' && gitArgs[1] === 'remove'
+      )
+    ).toHaveLength(1)
   })
 
   it('keeps the Orca-created marker when a new worktree reuses an Orca-created fork remote', async () => {

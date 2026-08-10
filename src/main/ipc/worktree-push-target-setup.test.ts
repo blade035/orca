@@ -156,6 +156,7 @@ describe('prepareWorktreePushTargetWithExec', () => {
       remoteUrl: FORK_SSH,
       remoteCreated: true
     })
+    expect(onRemoteCreated).toHaveBeenCalledTimes(1)
   })
 
   it('inherits remoteCreated when the predicate says a known worktree created the reused remote', async () => {
