@@ -70,8 +70,8 @@ async function main(): Promise<void> {
     if (activeServer?.child.exitCode === null) {
       await stopServer(activeServer).catch(() => activeServer?.child.kill('SIGKILL'))
     }
-    stopOwnedDaemon()
-    rmSync(ownedRoot, { force: true, recursive: true })
+    await stopOwnedDaemon()
+    rmSync(ownedRoot, { force: true, maxRetries: 20, recursive: true, retryDelay: 100 })
   }
 }
 
@@ -277,11 +277,12 @@ async function call<TResult>(
   return response.result
 }
 
-function stopOwnedDaemon(): void {
+async function stopOwnedDaemon(): Promise<void> {
   const daemonPath = join(dataPath, 'daemon')
   if (!existsSync(daemonPath)) {
     return
   }
+  const stoppedPids: number[] = []
   for (const entry of readdirSync(daemonPath)) {
     if (!/^daemon-v\d+\.pid$/.test(entry)) {
       continue
@@ -290,11 +291,26 @@ function stopOwnedDaemon(): void {
       const record = JSON.parse(readFileSync(join(daemonPath, entry), 'utf8')) as { pid?: unknown }
       if (typeof record.pid === 'number' && Number.isInteger(record.pid)) {
         process.kill(record.pid, 'SIGTERM')
+        stoppedPids.push(record.pid)
       }
     } catch {
       // The isolated verifier directory can contain a daemon that already retired.
     }
   }
+  await Promise.all(stoppedPids.map(waitForProcessExit))
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100))
+  }
+  throw new Error(`terminal daemon ${pid} did not exit after SIGTERM`)
 }
 
 function assert(condition: unknown, message: string): asserts condition {
