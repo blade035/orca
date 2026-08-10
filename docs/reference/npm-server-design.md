@@ -373,7 +373,7 @@ the terminal marker.
       locally.
 - [x] Prove both installed bins route zero-argument, `serve`, help/version, and non-server control
       commands exactly once without eagerly initializing the wrong runtime.
-- [ ] Record installed CLI startup/readiness timing and subprocess counts on the final package.
+- [x] Record installed CLI startup/readiness timing and subprocess counts on the final package.
 
 ### Accepted platform follow-ups
 
@@ -390,8 +390,8 @@ the terminal marker.
 - [x] Audit macOS, Linux, Windows, WSL, SSH, and path behavior; retain runtime gaps below.
 - [x] Re-run the final-head focused selector and workflow contract suite and record their actual
       counts below.
-- [ ] Attach package/Docker evidence and UI visual proof to the PR.
-- [ ] Complete the PR description with validation commands and remaining platform gaps.
+- [x] Attach package/Docker evidence and UI visual proof to the PR.
+- [x] Complete the PR description with validation commands and remaining platform gaps.
 
 ## Validation record and residual gaps
 
@@ -401,13 +401,14 @@ real E2EE, workspace, Git, PTY, shutdown, and restart-continuity oracle on macOS
 Ubuntu 20.04 amd64. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active native PTY
 against glibc 2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
 
-The current focused selector passed 521 tests across 21 server, RPC, cross-version wire, onboarding,
+The current focused selector passed 525 tests across 22 server, RPC, cross-version wire, onboarding,
 browserless composition, automation, precheck, profile-lock, readiness, installed-process,
 AgentHook, and shutdown files. The two workflow contract files passed 17 tests:
 
 ```bash
 pnpm exec vitest run --config config/vitest.config.ts \
   config/scripts/node-server-installed-process-harness.test.ts \
+  config/scripts/node-server-verifier-git-fixture.test.ts \
   config/scripts/node-server-verifier-host-path.test.ts \
   src/cli/runtime-client-deferral.test.ts \
   src/main/agent-hooks/server.test.ts \
@@ -433,9 +434,19 @@ pnpm exec vitest run --config config/vitest.config.ts \
   config/scripts/node-server-package-workflow-contract.test.mjs
 ```
 
-The final macOS arm64 installed-tarball oracle passed with 18,114,920 packed bytes and 55,066,712
-unpacked bytes. Ubuntu 20.04 amd64 passed the same installed runtime oracle in Docker, including the
-glibc 2.31 and `GLIBCXX_3.4.28` floors.
+The final macOS arm64 installed-tarball oracle passed with 18,114,920 packed bytes and 55,066,757
+unpacked bytes. Ubuntu 20.04, 22.04, and 24.04 amd64 passed the same installed runtime oracle in
+Docker; Ubuntu 20.04 also verified the glibc 2.31 and `GLIBCXX_3.4.28` floors.
+
+Ten fresh-profile installed-package trials on macOS arm64 reached the first schema-v1 readiness
+line in 352.705–748.323 ms, with a 369.474 ms median. Recursive process snapshots at one and three
+seconds were stable in every trial: one server, one daemon, no daemon PTY children, and no other
+subprocesses. Every measured server and daemon exited cleanly after its trial.
+
+The exact code candidate `8946cc3cc8ba80f48f95266b47552da217a6f261` also passed on the paired
+Windows host: 3 focused fixture/path/address files with 9 tests, Node typecheck, the node-server
+build, clean pack/install, and the full runtime oracle. The platform package measured 18,146,521
+packed bytes and 55,066,730 unpacked bytes, and left no server or daemon process behind.
 
 As an overlapping final packaging subset, the installed-process harness passed 2 tests and the
 package-workflow contract passed 4 tests. These six tests are already included in the focused and
