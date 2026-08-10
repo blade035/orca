@@ -369,7 +369,7 @@ the terminal marker.
 - [x] Test missing browser capabilities, explicit rejection, and no local fallback in remote RPCs.
 - [x] Run clean Docker tests on Ubuntu 20.04, 22.04, and 24.04 amd64 and 20.04 arm64.
 - [x] Verify the glibc 2.31 floor and Node native ABI.
-- [ ] Pass the installed-package runtime oracle on Windows Server 2022 x64; macOS arm64 passed
+- [x] Pass the installed-package runtime oracle on Windows Server 2022 x64; macOS arm64 passed
       locally.
 - [x] Prove both installed bins route zero-argument, `serve`, help/version, and non-server control
       commands exactly once without eagerly initializing the wrong runtime.
@@ -452,11 +452,11 @@ As an overlapping final packaging subset, the installed-process harness passed 2
 package-workflow contract passed 4 tests. These six tests are already included in the focused and
 workflow counts above rather than added to them.
 
-The required Windows Server 2022 x64 lane is pending on the current worktree, so Windows support is
-not yet claimed. Once that lane passes the full clean-install, E2EE, workspace, native PTY, restart,
-and cleanup journey, the explicit untested platform gaps remain WSL, Windows arm64, and nested SSH
-connection-manager parity in the browserless host. The PTY dependency contains Windows x64 and
-arm64 prebuilds, but a present binary is not runtime evidence for an untested target.
+The required Windows Server 2022 x64 lane passed the full clean-install, E2EE, workspace, native
+PTY, restart, and cleanup journey on the exact code candidate. The explicit untested platform gaps
+remain WSL, Windows arm64, and nested SSH connection-manager parity in the browserless host. The
+PTY dependency contains Windows arm64 prebuilds, but a present binary is not runtime evidence for
+that untested target.
 
 The package remains unpublished: the registry currently has neither `rc` nor `latest`. The PTY
 package also retains a deprecated transitive `prebuild-install` fallback; clean installs select the
