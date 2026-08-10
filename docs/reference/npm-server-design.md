@@ -34,6 +34,7 @@ agents, and orchestration. The missing boundary is the process environment aroun
 - Keep one implementation of workspace, terminal, Git, file, agent, and orchestration behavior.
 - Make zero-argument startup useful over SSH without exposing a public interface by accident.
 - Keep desktop `orca serve` working during migration.
+- Let the npm host and desktop app coexist safely as distinct hosts.
 - Support folder workspaces and Git worktrees.
 - Preserve macOS, Linux, Windows, SSH, WSL, Git 2.25, and glibc 2.31 compatibility.
 
@@ -45,6 +46,8 @@ agents, and orchestration. The missing boundary is the process environment aroun
 - Making a client-local fallback browser part of the remote host or giving it remote ownership.
 - Automatically configuring a VPN, firewall, reverse proxy, or public network listener.
 - Shipping an Electron binary inside an npm wrapper.
+- Letting two processes write one profile or automatically handing an npm host to the desktop app
+  in the initial release.
 
 ## User experience
 
@@ -169,6 +172,31 @@ device identity.
 Every listener, socket, timer, and signal handler installed by the Node composition root has a
 matching cleanup path. Startup failure runs the same cleanup before exiting nonzero.
 
+## Desktop coexistence and handoff
+
+The initial npm host and desktop app use separate default data directories. They can run on the
+same machine without sharing writable state, but they appear as separate Orca hosts and opening
+the desktop app does not take ownership of the npm host.
+
+The intended follow-up is a coordinated handoff, not an attempt to turn the running Node process
+into Electron. Standalone-backend architectures keep the host process independent and let desktop
+clients attach to or supervise it. Orca can move toward that model while keeping browser panes
+desktop-local.
+
+A safe handoff requires:
+
+1. one cross-process profile lease with an owner identity and generation;
+2. an authenticated local request from the desktop app to the npm host;
+3. a host checkpoint followed by listener shutdown and explicit lease release;
+4. desktop acquisition of the next generation before it opens the profile;
+5. reuse of the device registry, E2EE keypair, runtime metadata, and durable terminal daemon;
+6. client reconnect without re-pairing and terminal input/output after daemon adoption;
+7. bounded rollback to the npm host if desktop startup fails before readiness.
+
+No implementation may copy a live profile, infer ownership from a PID file alone, or let both
+processes publish runtime metadata. A desktop-only browser backend must remain a capability of the
+desktop owner rather than silently executing remote browser work on a viewing client.
+
 ## Packaging gates
 
 The publishable tarball must:
@@ -254,6 +282,17 @@ the terminal marker.
 - [x] Explain Tailscale, SSH-tunnel, and explicit LAN choices.
 - [x] Link the shorter npm-server documentation from the existing Linux guide.
 - [x] Capture visual proof for the UI change.
+
+### Desktop coexistence and handoff
+
+- [x] Use separate npm and desktop profiles so both installations can run safely today.
+- [x] Document the ownership, identity, daemon, and rollback contract for a future handoff.
+- [ ] Add a cross-process profile lease with generation fencing.
+- [ ] Let desktop discover and authenticate to the local npm host.
+- [ ] Checkpoint and transfer ownership without two live profile writers.
+- [ ] Preserve pairing identity and daemon-backed terminal continuity across the handoff.
+- [ ] Add failure-before-yield, failure-after-yield, mixed-version, and rollback oracles.
+- [ ] Add packaged macOS, Linux, and Windows desktop-handoff journeys.
 
 ### Tests
 
