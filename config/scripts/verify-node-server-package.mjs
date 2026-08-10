@@ -1,15 +1,17 @@
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 const repoRoot = resolve(import.meta.dirname, '..', '..')
 const packageRoot = join(repoRoot, 'resources', 'npm-server')
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'orca-server-package-'))
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const npmCommand = process.platform === 'win32' ? process.execPath : 'npm'
+const npmCommandArgs = getNpmCommandArgs()
 
 try {
   const packOutput = await runCapture(npmCommand, [
+    ...npmCommandArgs,
     'pack',
     packageRoot,
     '--json',
@@ -29,6 +31,7 @@ try {
     JSON.stringify({ private: true, name: 'orca-server-package-verifier', version: '0.0.0' })
   )
   await run(npmCommand, [
+    ...npmCommandArgs,
     'install',
     join(temporaryRoot, packed.filename),
     '--no-audit',
@@ -42,6 +45,7 @@ try {
   verifyManifest(installedManifest)
   const cliPath = join(installedRoot, 'dist', 'cli.js')
   const help = await runCapture(npmCommand, [
+    ...npmCommandArgs,
     '--prefix',
     installRoot,
     'exec',
@@ -53,7 +57,15 @@ try {
     throw new Error('installed CLI help is unavailable')
   }
   const version = (
-    await runCapture(npmCommand, ['--prefix', installRoot, 'exec', '--', 'orca-ide', '--version'])
+    await runCapture(npmCommand, [
+      ...npmCommandArgs,
+      '--prefix',
+      installRoot,
+      'exec',
+      '--',
+      'orca-ide',
+      '--version'
+    ])
   ).trim()
   if (version !== installedManifest.version) {
     throw new Error('installed CLI version is inconsistent')
@@ -112,6 +124,17 @@ function verifyManifest(manifest) {
   if (dependencies.some((name) => name === 'electron' || name === 'electron-updater')) {
     throw new Error('installed package depends on Electron')
   }
+}
+
+function getNpmCommandArgs() {
+  if (process.platform !== 'win32') {
+    return []
+  }
+  const npmCliPath = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  if (!existsSync(npmCliPath)) {
+    throw new Error(`npm CLI is missing beside Node: ${npmCliPath}`)
+  }
+  return [npmCliPath]
 }
 
 function run(command, args) {
