@@ -86,6 +86,76 @@ describe('AutomationService', () => {
     )
   })
 
+  it('fails one scheduled dispatch, advances it, and continues evaluating later due runs', async () => {
+    vi.setSystemTime(new Date('2026-05-13T08:59:00'))
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const createDueAutomation = (name: string) =>
+      store.createAutomation({
+        name,
+        prompt: 'Check the repo',
+        agentId: 'claude',
+        projectId: 'r1',
+        workspaceMode: 'existing',
+        workspaceId: 'wt1',
+        timezone: 'UTC',
+        rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+        dtstart: new Date('2026-05-12T00:00:00').getTime()
+      })
+    const failing = createDueAutomation('Failing dispatch')
+    const succeeding = createDueAutomation('Later dispatch')
+    vi.setSystemTime(new Date('2026-05-13T09:01:00'))
+    const send = vi.fn((_channel: string, payload: { automation: { id: string } }) => {
+      if (payload.automation.id === failing.id) {
+        throw new Error('renderer send failed')
+      }
+    })
+    const service = new AutomationService(store)
+    service.setWebContents({ isDestroyed: () => false, send } as never)
+
+    service.setRendererReady()
+
+    await vi.waitFor(() => {
+      expect(store.listAutomationRuns(failing.id)[0]?.status).toBe('dispatch_failed')
+      expect(store.listAutomationRuns(succeeding.id)[0]?.status).toBe('dispatching')
+    })
+    expect(store.listAutomationRuns(failing.id)[0]?.error).toBe('renderer send failed')
+    expect(store.listAutomations().find((entry) => entry.id === failing.id)?.nextRunAt).toBe(
+      new Date('2026-05-14T09:00:00').getTime()
+    )
+    expect(store.listAutomations().find((entry) => entry.id === succeeding.id)?.nextRunAt).toBe(
+      new Date('2026-05-14T09:00:00').getTime()
+    )
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves manual run rejection semantics when renderer dispatch throws', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Manual failure',
+      prompt: 'Check the repo',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: Date.now() + 60_000
+    })
+    const service = new AutomationService(store)
+    service.setWebContents({
+      isDestroyed: () => false,
+      send: () => {
+        throw new Error('renderer send failed')
+      }
+    } as never)
+    service.setRendererReady()
+
+    await expect(service.runNow(automation.id)).rejects.toThrow('renderer send failed')
+    expect(store.listAutomationRuns(automation.id)[0]?.status).toBe('dispatching')
+  })
+
   it('returns the persisted status for manual runs after dispatch is requested', async () => {
     vi.setSystemTime(new Date('2026-05-13T08:00:00Z'))
     const store = await createStore()
@@ -455,6 +525,51 @@ describe('AutomationService', () => {
     finish({ status: 'completed', outputSnapshot: null, error: null })
     await drain
     expect(store.listAutomationRuns(automation.id)[0]?.status).toBe('completed')
+  })
+
+  it('observes a rejected headless completion settlement', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Settlement failure',
+      prompt: 'Finish before shutdown',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: Date.now() + 60_000
+    })
+    const service = new AutomationService(store, {
+      allowRemoteHostScheduling: true,
+      headlessDispatcher: vi.fn().mockResolvedValue({
+        workspaceId: 'wt1',
+        terminalSessionId: 'tab-1',
+        completion: Promise.resolve({ status: 'completed', outputSnapshot: null, error: null })
+      })
+    })
+    vi.spyOn(service, 'markDispatchResult').mockRejectedValue(new Error('persistence failed'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+
+    try {
+      await service.runNow(automation.id)
+      await vi.waitFor(() =>
+        expect(consoleError).toHaveBeenCalledWith(
+          '[automations] headless completion settlement failed:',
+          expect.objectContaining({ message: 'persistence failed' })
+        )
+      )
+      await vi.advanceTimersByTimeAsync(0)
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 
   it('attaches provider usage when a completed run can be attributed', async () => {

@@ -104,17 +104,18 @@ export function createBrowserlessRuntimeComposition(args: {
   })
 
   let started = false
-  let stopped = false
-  const stopOwnedServices = async (): Promise<void> => {
-    if (stopped) {
-      return
+  let stopPromise: Promise<void> | null = null
+  const stopOwnedServices = (): Promise<void> => {
+    if (!stopPromise) {
+      stopPromise = settleBrowserlessOwnedServiceStops([
+        () => automations.stopAndDrain(),
+        () => rateLimits.stop(),
+        stopAccountRuntimeTargetSync,
+        () => agentHookServer.setClaudeStatusLineListener(null),
+        () => agentHookServer.stopAndWait()
+      ])
     }
-    stopped = true
-    await automations.stopAndDrain()
-    rateLimits.stop()
-    stopAccountRuntimeTargetSync()
-    agentHookServer.setClaudeStatusLineListener(null)
-    await agentHookServer.stopAndWait()
+    return stopPromise
   }
   return {
     runtime,
@@ -122,7 +123,7 @@ export function createBrowserlessRuntimeComposition(args: {
       if (started) {
         return
       }
-      if (stopped) {
+      if (stopPromise) {
         throw new Error('The browserless runtime composition is already stopped.')
       }
       started = true
@@ -146,13 +147,36 @@ export function createBrowserlessRuntimeComposition(args: {
         automations.start()
       } catch (error) {
         started = false
-        await stopOwnedServices()
+        try {
+          await stopOwnedServices()
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'Browserless runtime startup and cleanup both failed'
+          )
+        }
         throw error
       }
     },
     async stop(): Promise<void> {
       await stopOwnedServices()
     }
+  }
+}
+
+async function settleBrowserlessOwnedServiceStops(
+  stops: readonly (() => void | Promise<void>)[]
+): Promise<void> {
+  const failures: unknown[] = []
+  for (const stop of stops) {
+    try {
+      await stop()
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Browserless owned service shutdown failed')
   }
 }
 
@@ -184,12 +208,8 @@ function configureAccountServices(
 function configureInactiveAccountResolvers(store: Store, rateLimits: RateLimitService): void {
   rateLimits.setInactiveClaudeAccountsResolver(() => {
     const settings = store.getSettings()
-    const activeIds = new Set(
-      [
-        normalizeClaudeRuntimeSelection(settings).host,
-        ...Object.values(normalizeClaudeRuntimeSelection(settings).wsl)
-      ].filter(Boolean)
-    )
+    const selection = normalizeClaudeRuntimeSelection(settings)
+    const activeIds = new Set([selection.host, ...Object.values(selection.wsl)].filter(Boolean))
     return settings.claudeManagedAccounts
       .filter((account) => !activeIds.has(account.id))
       .map((account) => ({
@@ -202,12 +222,8 @@ function configureInactiveAccountResolvers(store: Store, rateLimits: RateLimitSe
   })
   rateLimits.setInactiveCodexAccountsResolver(() => {
     const settings = store.getSettings()
-    const activeIds = new Set(
-      [
-        normalizeCodexRuntimeSelection(settings).host,
-        ...Object.values(normalizeCodexRuntimeSelection(settings).wsl)
-      ].filter(Boolean)
-    )
+    const selection = normalizeCodexRuntimeSelection(settings)
+    const activeIds = new Set([selection.host, ...Object.values(selection.wsl)].filter(Boolean))
     return settings.codexManagedAccounts
       .filter((account) => !activeIds.has(account.id))
       .map((account) => ({ id: account.id, managedHomePath: account.managedHomePath }))

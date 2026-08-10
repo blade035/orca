@@ -4,9 +4,6 @@ export class HeadlessAutomationWorkDrain {
   constructor(private readonly enabled: boolean) {}
 
   track<T>(work: Promise<T>): Promise<T> {
-    if (!this.enabled) {
-      return work
-    }
     let settlement: Promise<void>
     settlement = work.then(
       () => {
@@ -16,7 +13,9 @@ export class HeadlessAutomationWorkDrain {
         this.pending.delete(settlement)
       }
     )
-    this.pending.add(settlement)
+    if (this.enabled) {
+      this.pending.add(settlement)
+    }
     return work
   }
 

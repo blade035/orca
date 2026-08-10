@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as managedHookLockClaims from '../main/agent-hooks/managed-hook-lock-claims'
 import {
   readManagedHookHostIdentity,
   readManagedHookProcessIdentity
@@ -294,6 +295,17 @@ describe('server profile process lock', () => {
     })
     const recovered = await acquireServerProfileProcessLock(abandonedRoot)
     await recovered.release()
+  })
+
+  it('retries release after a transient removal failure', async () => {
+    const root = await createRoot()
+    const lock = await acquireServerProfileProcessLock(root)
+    const removeLock = vi.spyOn(managedHookLockClaims, 'removeManagedHookLock')
+    removeLock.mockResolvedValueOnce('unverifiable')
+
+    await expect(lock.release()).rejects.toMatchObject({ reason: 'release_failed' })
+    await expect(lock.release()).resolves.toBeUndefined()
+    expect(removeLock).toHaveBeenCalledTimes(2)
   })
 
   it('surfaces a typed error when the current process cannot be identified', async () => {

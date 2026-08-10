@@ -7,6 +7,17 @@ import type { Store } from '../main/persistence'
 const state = vi.hoisted(() => {
   const calls: string[] = []
   const signerKeyIds: string[] = []
+  const inactiveResolvers = {
+    claude: null as (() => unknown) | null,
+    codex: null as (() => unknown) | null
+  }
+  const normalizationCalls = { claude: 0, codex: 0 }
+  const stopErrors = {
+    automation: null as Error | null,
+    rateLimits: null as Error | null,
+    targetSync: null as Error | null,
+    hook: null as Error | null
+  }
 
   class Runtime {
     private accountServices: {
@@ -73,8 +84,12 @@ const state = vi.hoisted(() => {
     setClaudeAuthPreparationResolver(): void {}
     setCodexFetchTarget(): void {}
     setClaudeFetchTarget(): void {}
-    setInactiveClaudeAccountsResolver(): void {}
-    setInactiveCodexAccountsResolver(): void {}
+    setInactiveClaudeAccountsResolver(resolver: () => unknown): void {
+      inactiveResolvers.claude = resolver
+    }
+    setInactiveCodexAccountsResolver(resolver: () => unknown): void {
+      inactiveResolvers.codex = resolver
+    }
     ingestLiveClaudeRateLimits(): void {}
     getState(): unknown {
       return { codex: null, claude: null }
@@ -84,6 +99,9 @@ const state = vi.hoisted(() => {
     }
     stop(): void {
       calls.push('rate-stop')
+      if (stopErrors.rateLimits) {
+        throw stopErrors.rateLimits
+      }
     }
   }
 
@@ -99,10 +117,22 @@ const state = vi.hoisted(() => {
     }
     async stopAndDrain(): Promise<void> {
       this.stop()
+      if (stopErrors.automation) {
+        throw stopErrors.automation
+      }
     }
   }
 
-  return { Automation, calls, RateLimits, Runtime, signerKeyIds }
+  return {
+    Automation,
+    calls,
+    inactiveResolvers,
+    normalizationCalls,
+    RateLimits,
+    Runtime,
+    signerKeyIds,
+    stopErrors
+  }
 })
 
 vi.mock('../main/runtime/orca-runtime', () => ({ OrcaRuntimeService: state.Runtime }))
@@ -174,17 +204,32 @@ vi.mock('../main/rate-limits/account-runtime-target-sync', () => ({
   createAccountRuntimeTargetSettingsSync: () => async () => {}
 }))
 vi.mock('../main/codex-accounts/runtime-selection', () => ({
-  normalizeCodexRuntimeSelection: () => ({ host: null, wsl: {} })
+  normalizeCodexRuntimeSelection: () => {
+    state.normalizationCalls.codex += 1
+    return { host: null, wsl: {} }
+  }
 }))
 vi.mock('../main/claude-accounts/runtime-selection', () => ({
-  normalizeClaudeRuntimeSelection: () => ({ host: null, wsl: {} })
+  normalizeClaudeRuntimeSelection: () => {
+    state.normalizationCalls.claude += 1
+    return { host: null, wsl: {} }
+  }
 }))
 
 const hookServer = vi.hoisted(() => ({
   start: vi.fn(async () => state.calls.push('hook-start')),
-  stop: vi.fn(() => state.calls.push('hook-stop')),
-  stopAndWait: vi.fn(async () => state.calls.push('hook-stop')),
-  setClaudeStatusLineListener: vi.fn(),
+  stop: vi.fn(() => state.calls.push('hook-stop-unjoined')),
+  stopAndWait: vi.fn(async () => {
+    state.calls.push('hook-stop-wait')
+    if (state.stopErrors.hook) {
+      throw state.stopErrors.hook
+    }
+  }),
+  setClaudeStatusLineListener: vi.fn((listener: unknown) => {
+    if (listener === null) {
+      state.calls.push('hook-listener-clear')
+    }
+  }),
   ingestTerminalStatus: vi.fn(),
   getStatusSnapshot: vi.fn(() => []),
   getStatusSnapshotForPane: vi.fn(() => []),
@@ -214,6 +259,14 @@ const temporaryPaths: string[] = []
 afterEach(() => {
   state.calls.length = 0
   state.signerKeyIds.length = 0
+  state.stopErrors.automation = null
+  state.stopErrors.rateLimits = null
+  state.stopErrors.targetSync = null
+  state.stopErrors.hook = null
+  state.inactiveResolvers.claude = null
+  state.inactiveResolvers.codex = null
+  state.normalizationCalls.claude = 0
+  state.normalizationCalls.codex = 0
   vi.clearAllMocks()
   for (const path of temporaryPaths.splice(0)) {
     rmSync(path, { force: true, recursive: true })
@@ -243,6 +296,17 @@ describe('browserless runtime composition', () => {
     expect(state.signerKeyIds[0]).toBe(state.signerKeyIds[1])
   })
 
+  it('normalizes each account runtime selection once per inactive-account resolution', () => {
+    const dataPath = mkdtempSync(join(tmpdir(), 'orca-browserless-composition-'))
+    temporaryPaths.push(dataPath)
+    createBrowserlessRuntimeComposition({ store: createStore(), dataPath })
+
+    state.inactiveResolvers.claude?.()
+    state.inactiveResolvers.codex?.()
+
+    expect(state.normalizationCalls).toEqual({ claude: 1, codex: 1 })
+  })
+
   it('orders startup recovery and joins owned lifecycle shutdown', async () => {
     const dataPath = mkdtempSync(join(tmpdir(), 'orca-browserless-composition-'))
     temporaryPaths.push(dataPath)
@@ -262,8 +326,41 @@ describe('browserless runtime composition', () => {
       'automation-start',
       'automation-stop',
       'rate-stop',
-      'hook-stop'
+      'target-sync-stop',
+      'hook-listener-clear',
+      'hook-stop-wait'
     ])
+    expect(hookServer.stop).not.toHaveBeenCalled()
+  })
+
+  it('attempts every owned teardown in order and aggregates failures', async () => {
+    const dataPath = mkdtempSync(join(tmpdir(), 'orca-browserless-composition-'))
+    temporaryPaths.push(dataPath)
+    const composition = createBrowserlessRuntimeComposition({ store: createStore(), dataPath })
+    state.stopErrors.automation = new Error('automation drain failed')
+    state.stopErrors.rateLimits = new Error('rate stop failed')
+    state.stopErrors.targetSync = new Error('target sync stop failed')
+    state.stopErrors.hook = new Error('hook stop failed')
+
+    const error = await composition.stop().catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([
+      state.stopErrors.automation,
+      state.stopErrors.rateLimits,
+      state.stopErrors.targetSync,
+      state.stopErrors.hook
+    ])
+    expect(state.calls).toEqual([
+      'prepare',
+      'automation-stop',
+      'rate-stop',
+      'target-sync-stop',
+      'hook-listener-clear',
+      'hook-stop-wait'
+    ])
+    await expect(composition.stop()).rejects.toBe(error)
+    expect(hookServer.stop).not.toHaveBeenCalled()
   })
 
   it('cleans up once when startup fails', async () => {
@@ -275,7 +372,14 @@ describe('browserless runtime composition', () => {
     await expect(composition.startAfterDaemon()).rejects.toThrow('hook bind failed')
     await composition.stop()
 
-    expect(state.calls).toEqual(['prepare', 'automation-stop', 'rate-stop', 'hook-stop'])
+    expect(state.calls).toEqual([
+      'prepare',
+      'automation-stop',
+      'rate-stop',
+      'target-sync-stop',
+      'hook-listener-clear',
+      'hook-stop-wait'
+    ])
     await expect(composition.startAfterDaemon()).rejects.toThrow('already stopped')
   })
 })
@@ -284,6 +388,11 @@ function createStore(): Store {
   const settings = { claudeManagedAccounts: [], codexManagedAccounts: [] }
   return {
     getSettings: () => settings,
-    onSettingsChanged: () => () => {}
+    onSettingsChanged: () => () => {
+      state.calls.push('target-sync-stop')
+      if (state.stopErrors.targetSync) {
+        throw state.stopErrors.targetSync
+      }
+    }
   } as unknown as Store
 }

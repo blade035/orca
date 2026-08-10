@@ -1,5 +1,7 @@
 # Orca Server
 
+Requires Node.js 24 or newer.
+
 Run Orca on a development server without installing the Electron desktop application:
 
 ```bash

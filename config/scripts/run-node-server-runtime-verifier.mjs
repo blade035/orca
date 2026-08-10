@@ -4,14 +4,15 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { build } from 'esbuild'
 
+const repoRoot = resolve(import.meta.dirname, '..', '..')
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'orca-runtime-verifier-build-'))
 const verifierPath = join(temporaryRoot, 'verifier.cjs')
 
 try {
   await build({
-    absWorkingDir: resolve('.'),
+    absWorkingDir: repoRoot,
     bundle: true,
-    entryPoints: ['config/scripts/node-server-runtime-verifier.ts'],
+    entryPoints: [join(repoRoot, 'config', 'scripts', 'node-server-runtime-verifier.ts')],
     format: 'cjs',
     outfile: verifierPath,
     platform: 'node',

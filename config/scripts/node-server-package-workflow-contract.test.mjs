@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { win32 } from 'node:path'
+import { join, win32 } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { resolveNodeServerNpmInvocation } from './node-server-npm-invocation.mjs'
 
-const dockerfile = readFileSync('config/docker/node-server/Dockerfile', 'utf8')
+const dockerfile = readFileSync(join('config', 'docker', 'node-server', 'Dockerfile'), 'utf8')
 
 describe('Node server package workflow contract', () => {
   it('verifies the selected Node archive before extracting it', () => {

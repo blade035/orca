@@ -19,7 +19,8 @@ vi.mock('../ipc/ssh', () => ({
 const node = JSON.stringify(process.execPath)
 
 function nodeCommand(script: string): string {
-  return `${node} -e ${JSON.stringify(script)}`
+  const encodedScript = Buffer.from(script).toString('base64')
+  return `${node} -e "eval(Buffer.from('${encodedScript}','base64').toString())"`
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -100,7 +101,7 @@ describe('runAutomationPrecheck', () => {
         timedOut: false,
         error: 'Precheck cancelled.'
       })
-      await vi.waitFor(() => expect(isProcessAlive(childPid)).toBe(false))
+      await vi.waitFor(() => expect(isProcessAlive(childPid)).toBe(false), { timeout: 15_000 })
     } finally {
       if (childPid && isProcessAlive(childPid)) {
         process.kill(childPid, 'SIGKILL')
@@ -140,6 +141,11 @@ describe('runAutomationPrecheck', () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('ready')
     expect(result.error).toBeNull()
+    expect(() => channel.emit('error', new Error('late channel error'))).not.toThrow()
+    expect(() => channel.stderr.emit('error', new Error('late stderr error'))).not.toThrow()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(channel.listenerCount('error')).toBe(0)
+    expect(channel.stderr.listenerCount('error')).toBe(0)
   })
 
   it('closes an acquired SSH channel and settles when aborted', async () => {
@@ -178,6 +184,35 @@ describe('runAutomationPrecheck', () => {
     channel.emit('close')
     expect(channel.listenerCount('error')).toBe(0)
     expect(channel.stderr.listenerCount('error')).toBe(0)
+  })
+
+  it('consumes errors after an SSH failure until the channel closes', async () => {
+    const channel = Object.assign(new EventEmitter(), {
+      stderr: new PassThrough(),
+      close: vi.fn()
+    })
+    sshManagerState.manager = {
+      getConnection: vi.fn(() => ({
+        getState: () => ({ status: 'connected' }),
+        exec: vi.fn(async () => channel)
+      }))
+    }
+
+    const resultPromise = runAutomationPrecheck({
+      precheck: { command: 'failing-command', timeoutSeconds: 5 },
+      target: { type: 'ssh', cwd: '/repo/path', connectionId: 'ssh-1' }
+    })
+    await vi.waitFor(() => expect(channel.listenerCount('error')).toBe(1))
+    channel.emit('error', new Error('SSH command failed'))
+
+    await expect(resultPromise).resolves.toMatchObject({ error: 'SSH command failed' })
+    expect(() => channel.emit('error', new Error('late channel error'))).not.toThrow()
+    expect(() => channel.stderr.emit('error', new Error('late stderr error'))).not.toThrow()
+    expect(channel.listenerCount('close')).toBe(1)
+    channel.emit('close')
+    expect(channel.listenerCount('error')).toBe(0)
+    expect(channel.stderr.listenerCount('error')).toBe(0)
+    expect(channel.listenerCount('close')).toBe(0)
   })
 
   it('bounds SSH channel acquisition and closes a channel that resolves after abort', async () => {

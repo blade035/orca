@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -7,29 +6,18 @@ import { decodePairingOffer, type PairingOffer } from '../../src/shared/pairing'
 import { sendRemoteRuntimeRequest } from '../../src/shared/remote-runtime-client'
 import type { RuntimeStatus, RuntimeTerminalRead } from '../../src/shared/runtime-types'
 import { verifyInstalledCliProfileBehavior } from './node-server-installed-cli-oracle'
-import {
-  isExpectedInstalledServerStopResult,
-  waitForInstalledServerExit
-} from './node-server-installed-process-harness'
 import { stopNodeServerVerifierDaemons } from './node-server-verifier-daemon-cleanup'
 import { initializeNodeServerVerifierGitWorkspace } from './node-server-verifier-git-fixture'
 import { isSameExistingHostPath } from './node-server-verifier-host-path'
-
-type ReadyPayload = {
-  type: 'orca_server_ready'
-  schemaVersion: 1
-  runtimeId: string
-  boundEndpoint: string
-  pairing: {
-    available: true
-    url: string
-    webClientUrl: string
-  }
-}
-
-type RunningServer = { child: ChildProcess; ready: ReadyPayload; stderr: string[] }
+import {
+  startNodeServerVerifierProcess,
+  stopNodeServerVerifierProcess,
+  terminateNodeServerVerifierProcess,
+  type NodeServerVerifierProcess
+} from './node-server-verifier-server-process'
 const cliPath = resolve(readArgument('--cli') ?? 'resources/npm-server/dist/cli.js')
 const expectedVersion = readArgument('--expected-version') ?? packageVersionFromEnvironment()
+// Keep Unix daemon socket paths below platform limits while preserving Windows-native temp paths.
 const shortTemporaryRoot = process.platform === 'win32' ? tmpdir() : '/tmp'
 const ownedRoot = realpathSync.native(mkdtempSync(join(shortTemporaryRoot, 'orca-nsv-')))
 const dataPath = join(ownedRoot, 'state')
@@ -37,12 +25,12 @@ const gitPath = join(ownedRoot, 'git-workspace')
 const folderPath = join(ownedRoot, 'folder-workspace')
 
 async function main(): Promise<void> {
-  let activeServer: RunningServer | null = null
+  let activeServer: NodeServerVerifierProcess | null = null
   try {
     initializeNodeServerVerifierGitWorkspace(gitPath)
     mkdirSync(folderPath)
 
-    const first = await startServer()
+    const first = await startNodeServerVerifierProcess({ cliPath, dataPath })
     activeServer = first
     const pairing = decodePairingOffer(first.ready.pairing.url)
     await verifyWebClient(first.ready.pairing.webClientUrl)
@@ -59,10 +47,10 @@ async function main(): Promise<void> {
       terminalHandle: terminal.handle,
       temporaryRoot: ownedRoot
     })
-    await stopServer(first)
+    await stopNodeServerVerifierProcess(first)
     activeServer = null
 
-    const second = await startServer()
+    const second = await startNodeServerVerifierProcess({ cliPath, dataPath })
     activeServer = second
     assert(
       second.ready.runtimeId !== first.ready.runtimeId,
@@ -79,12 +67,14 @@ async function main(): Promise<void> {
     const reattached = restored.terminals.find((candidate) => candidate.ptyId === terminal.ptyId)
     assert(reattached, 'terminal daemon session was not adopted')
     await waitForTerminalMarker(reconnectedPairing, reattached.handle, terminal.marker)
-    await stopServer(second)
+    await stopNodeServerVerifierProcess(second)
     activeServer = null
     process.stdout.write('Node server runtime verification passed\n')
   } finally {
     if (activeServer?.child.exitCode === null && activeServer.child.signalCode === null) {
-      await stopServer(activeServer).catch(() => activeServer?.child.kill('SIGKILL'))
+      await stopNodeServerVerifierProcess(activeServer).catch(() =>
+        terminateNodeServerVerifierProcess(activeServer.child)
+      )
     }
     await stopNodeServerVerifierDaemons(dataPath)
     await removeHostTree(ownedRoot)
@@ -107,81 +97,8 @@ function packageVersionFromEnvironment(): string {
   return process.env.npm_package_version ?? '0.0.0-dev'
 }
 
-function startServer(): Promise<RunningServer> {
-  return new Promise((resolveStart, rejectStart) => {
-    const stderr: string[] = []
-    const child = spawn(
-      process.execPath,
-      [
-        cliPath,
-        'serve',
-        '--port',
-        '0',
-        '--listen',
-        '127.0.0.1',
-        '--pairing-address',
-        '127.0.0.1',
-        '--json'
-      ],
-      { env: { ...process.env, ORCA_SERVER_DATA_DIR: dataPath }, stdio: ['ignore', 'pipe', 'pipe'] }
-    )
-    let stdout = ''
-    const timeout = setTimeout(() => fail(new Error('server readiness timed out')), 30_000)
-
-    child.stderr?.setEncoding('utf8')
-    child.stderr?.on('data', (chunk: string) => stderr.push(chunk))
-    child.stdout?.setEncoding('utf8')
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk
-      const newline = stdout.indexOf('\n')
-      if (newline === -1) {
-        return
-      }
-      try {
-        const ready = JSON.parse(stdout.slice(0, newline)) as ReadyPayload
-        assert(ready.type === 'orca_server_ready', 'unexpected readiness type')
-        assert(ready.schemaVersion === 1, 'unexpected readiness schema')
-        assert(ready.pairing.available, 'pairing unavailable')
-        assert(new URL(ready.boundEndpoint).hostname === '127.0.0.1', 'listener is not loopback')
-        clearTimeout(timeout)
-        resolveStart({ child, ready, stderr })
-      } catch (error) {
-        fail(error)
-      }
-    })
-    child.once('error', fail)
-    child.once('exit', (code) =>
-      fail(new Error(`server exited before readiness (${code}): ${stderr.join('')}`))
-    )
-
-    function fail(error: unknown): void {
-      clearTimeout(timeout)
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM')
-      }
-      rejectStart(error)
-    }
-  })
-}
-
-async function stopServer(server: RunningServer): Promise<void> {
-  const { child } = server
-  if (child.exitCode !== null || child.signalCode !== null) {
-    throw new Error(`server exited unexpectedly (${child.exitCode ?? child.signalCode})`)
-  }
-  if (!child.kill('SIGTERM')) {
-    throw new Error('server rejected the shutdown signal')
-  }
-  const result = await waitForInstalledServerExit(child)
-  if (!isExpectedInstalledServerStopResult(result, process.platform)) {
-    throw new Error(
-      `server shutdown failed (${result.code ?? result.signal}): ${server.stderr.join('')}`
-    )
-  }
-}
-
 async function verifyWebClient(url: string): Promise<void> {
-  const response = await fetch(url)
+  const response = await fetch(url, { signal: AbortSignal.timeout(15_000) })
   assert(response.ok, `web client returned ${response.status}`)
   assert((await response.text()).includes('<!doctype html>'), 'web client HTML was not served')
 }
@@ -201,7 +118,10 @@ async function verifyStatus(
     'browser.headless.v1',
     'browser.certificate-trust.v1'
   ]) {
-    assert(!capabilities.includes(capability as never), `browser capability leaked: ${capability}`)
+    assert(
+      !capabilities.some((candidate) => candidate === capability),
+      `browser capability leaked: ${capability}`
+    )
   }
 }
 

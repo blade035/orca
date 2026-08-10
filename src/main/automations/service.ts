@@ -24,6 +24,7 @@ import {
   didAutomationPrecheckPass,
   formatAutomationPrecheckFailure
 } from '../../shared/automation-precheck'
+import { evaluateScheduledAutomation } from './scheduled-automation-evaluation'
 
 const DEFAULT_TICK_MS = 60 * 1000
 
@@ -68,7 +69,7 @@ export class AutomationService {
 
   setRendererReady(): void {
     this.rendererReady = true
-    void this.headlessWork.track(this.evaluateDueRuns())
+    this.trackBackgroundWork(this.evaluateDueRuns(), 'renderer-ready evaluation')
   }
 
   start(): void {
@@ -76,12 +77,12 @@ export class AutomationService {
       return
     }
     this.timer = setInterval(() => {
-      void this.headlessWork.track(this.evaluateDueRuns())
+      this.trackBackgroundWork(this.evaluateDueRuns(), 'scheduled evaluation')
     }, this.tickMs)
     // Why: headless serve never gets a renderer-ready IPC, but due runs still
     // need the same startup catch-up pass desktop gets after renderer attach.
     if (this.rendererReady || this.headlessDispatcher) {
-      void this.headlessWork.track(this.evaluateDueRuns())
+      this.trackBackgroundWork(this.evaluateDueRuns(), 'startup evaluation')
     }
   }
 
@@ -196,34 +197,20 @@ export class AutomationService {
         if (!automation.enabled || automation.nextRunAt > now) {
           continue
         }
-        await this.evaluateAutomation(automation, now)
+        try {
+          await evaluateScheduledAutomation({
+            store: this.store,
+            automation,
+            now,
+            requestDispatch: (entry, run) => this.requestDispatch(entry, run)
+          })
+        } catch (error) {
+          console.error(`[automations] Scheduled evaluation failed for ${automation.id}:`, error)
+        }
       }
     } finally {
       this.evaluating = false
     }
-  }
-
-  private async evaluateAutomation(automation: Automation, now: number): Promise<void> {
-    const scheduledFor = this.store.getLatestAutomationOccurrence(automation, now)
-    if (scheduledFor === null) {
-      this.store.advanceAutomationNextRun(automation.id, now)
-      return
-    }
-    const run = this.store.createAutomationRun(automation, scheduledFor)
-    const graceMs = automation.missedRunGraceMinutes * 60 * 1000
-    if (now - scheduledFor > graceMs) {
-      this.store.updateAutomationRun({
-        runId: run.id,
-        status: 'skipped_missed',
-        workspaceId: automation.workspaceId,
-        error: 'Orca was unavailable during the missed-run grace window.'
-      })
-      this.store.advanceAutomationNextRun(automation.id, now)
-      return
-    }
-
-    await this.requestDispatch(automation, run)
-    this.store.advanceAutomationNextRun(automation.id, now)
   }
 
   private async requestDispatch(
@@ -301,14 +288,15 @@ export class AutomationService {
         error: null
       })
       if (launch.completion) {
-        void this.headlessWork.track(
+        this.trackBackgroundWork(
           settleHeadlessAutomationCompletion({
             completion: launch.completion,
             runId: run.id,
             target: launchRunTarget,
             precheckResult,
             mark: (result) => this.markDispatchResult(result)
-          })
+          }),
+          'headless completion settlement'
         )
       }
       return updated
@@ -317,8 +305,15 @@ export class AutomationService {
         runId: run.id,
         status: 'dispatch_failed',
         workspaceId: automation.workspaceId,
+        precheckResult,
         error: error instanceof Error ? error.message : String(error)
       })
     }
+  }
+
+  private trackBackgroundWork(work: Promise<unknown>, context: string): void {
+    void this.headlessWork.track(work).catch((error) => {
+      console.error(`[automations] ${context} failed:`, error)
+    })
   }
 }

@@ -25,7 +25,7 @@
       "platforms": ["macos", "linux", "windows"],
       "providers": ["local", "ssh", "paired-runtime-host"],
       "coveredPlatforms": ["macos"],
-      "coveredProviders": ["local", "ssh", "paired-runtime-host"],
+      "coveredProviders": ["local", "ssh"],
       "coverageNotes": "A real local child process and injected SSH acquisition/channel barriers cover cancellation, late fulfillment and rejection, process death, channel close, listener cleanup, and service drain. Physical Windows taskkill and live SSH transport remain uncollected.",
       "motivatingLinks": ["https://github.com/stablyai/orca/pull/13452"],
       "invariant": "Stopping a headless automation service must abort any scheduled precheck, terminate its local process tree or close its SSH channel, consume late SSH acquisition settlement, and drain without waiting for the configured precheck timeout or leaving an unobserved error event.",

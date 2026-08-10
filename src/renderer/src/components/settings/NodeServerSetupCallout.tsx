@@ -15,14 +15,12 @@ export function NodeServerSetupCallout(): React.JSX.Element {
           'Copied server command.'
         )
       )
-    } catch (error) {
+    } catch {
       toast.error(
-        error instanceof Error
-          ? error.message
-          : translate(
-              'auto.components.settings.NodeServerSetupCallout.copyFailed',
-              'Failed to copy server command.'
-            )
+        translate(
+          'auto.components.settings.NodeServerSetupCallout.copyFailed',
+          'Failed to copy server command.'
+        )
       )
     }
   }

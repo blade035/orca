@@ -136,6 +136,7 @@ describe('PR workflow parallelism', () => {
     const job = workflow.jobs.node_server_package
 
     expect(job.strategy.matrix.os).toEqual(['ubuntu-latest', 'windows-2022'])
+    expect(job['timeout-minutes']).toBe(20)
     expect(
       job.steps.find((step) => step.uses === './.github/actions/install-node-dependencies').with
     ).toBeUndefined()
@@ -145,6 +146,11 @@ describe('PR workflow parallelism', () => {
     expect(job.steps.find((step) => step.name === 'Verify installed package and runtime').run).toBe(
       'pnpm run verify:node-server-package'
     )
+    const windowsLockStep = job.steps.find(
+      (step) => step.name === 'Verify Windows profile process lock'
+    )
+    expect(windowsLockStep.if).toBe("runner.os == 'Windows'")
+    expect(windowsLockStep.run).toContain('server-profile-process-lock.test.ts')
     const dockerStep = job.steps.find(
       (step) => step.name === 'Verify Ubuntu 20.04 and glibc 2.31 floor'
     )

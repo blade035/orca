@@ -334,6 +334,7 @@ jobs:
   node_server_package:
     name: node server package (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -349,6 +350,10 @@ jobs:
 
       - name: Build Node server package
         run: pnpm run build:node-server
+
+      - name: Verify Windows profile process lock
+        if: runner.os == 'Windows'
+        run: pnpm exec vitest run --config config/vitest.config.ts src/node-server/server-profile-process-lock.test.ts
 
       - name: Verify installed package and runtime
         run: pnpm run verify:node-server-package

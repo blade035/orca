@@ -166,7 +166,6 @@ function createOwnedLock(
       if (released) {
         return
       }
-      released = true
       try {
         const removal = await removeManagedHookLock(
           lockPath,
@@ -182,6 +181,7 @@ function createOwnedLock(
             owner.pid
           )
         }
+        released = true
       } finally {
         deactivateManagedHookLockOwner(owner.token)
       }

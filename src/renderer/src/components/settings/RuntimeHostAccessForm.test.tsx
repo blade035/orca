@@ -36,6 +36,9 @@ describe('RuntimeHostAccessForm', () => {
     expect(markup).toContain('Tailscale')
     expect(markup).toContain('SSH tunnel')
     expect(markup).toContain('Already have the Orca desktop app')
+    expect(markup.indexOf('npx @stablyai/orca@latest')).toBeLessThan(
+      markup.indexOf('Already have the Orca desktop app')
+    )
   })
 
   it('shows the sanitized destination without credential material', () => {

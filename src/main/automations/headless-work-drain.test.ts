@@ -22,22 +22,25 @@ describe('HeadlessAutomationWorkDrain', () => {
     expect(drained).toBe(true)
   })
 
-  it('observes rejected fire-and-forget work without an unhandled rejection', async () => {
-    const unhandled: unknown[] = []
-    const onUnhandled = (reason: unknown): void => {
-      unhandled.push(reason)
-    }
-    process.on('unhandledRejection', onUnhandled)
+  it.each([true, false])(
+    'observes rejected fire-and-forget work without an unhandled rejection (enabled=%s)',
+    async (enabled) => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown): void => {
+        unhandled.push(reason)
+      }
+      process.on('unhandledRejection', onUnhandled)
 
-    try {
-      const drain = new HeadlessAutomationWorkDrain(true)
-      drain.track(Promise.reject(new Error('dispatch failed')))
+      try {
+        const drain = new HeadlessAutomationWorkDrain(enabled)
+        drain.track(Promise.reject(new Error('dispatch failed')))
 
-      await drain.drain()
-      await new Promise<void>((resolve) => setImmediate(resolve))
-      expect(unhandled).toEqual([])
-    } finally {
-      process.off('unhandledRejection', onUnhandled)
+        await drain.drain()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
     }
-  })
+  )
 })

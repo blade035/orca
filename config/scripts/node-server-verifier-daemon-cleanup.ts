@@ -23,7 +23,13 @@ export async function stopNodeServerVerifierDaemons(dataPath: string): Promise<v
       // The isolated verifier directory can contain a daemon that already retired.
     }
   }
-  await Promise.all(shutdowns)
+  const results = await Promise.allSettled(shutdowns)
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  )
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Terminal daemon cleanup failed')
+  }
 }
 
 async function shutdownDaemon(

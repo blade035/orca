@@ -15,6 +15,22 @@ type SshPrecheckTarget = {
   connectionId: string
 }
 
+function consumeLateSshErrors(channel: ClientChannel, alreadyClosed: boolean): void {
+  const consumeError = (): void => {}
+  const stopObserving = (): void => {
+    channel.off('error', consumeError)
+    channel.stderr.off('error', consumeError)
+    channel.off('close', stopObserving)
+  }
+  channel.on('error', consumeError)
+  channel.stderr.on('error', consumeError)
+  if (alreadyClosed) {
+    setImmediate(stopObserving)
+  } else {
+    channel.once('close', stopObserving)
+  }
+}
+
 function closeSshPrecheckChannel(channel: ClientChannel): void {
   const consumeError = (): void => {}
   const stopObserving = (): void => {
@@ -49,6 +65,7 @@ function runSshChannelPrecheck(args: {
     let exitCode: number | null = null
     let timedOut = false
     let cancelled = false
+    let closed = false
     let settled = false
     let timeout: ReturnType<typeof setTimeout> | null = null
 
@@ -65,6 +82,7 @@ function runSshChannelPrecheck(args: {
       exitCode = typeof code === 'number' ? code : null
     }
     const onClose = (code?: number | null): void => {
+      closed = true
       if (typeof code === 'number') {
         exitCode = code
       }
@@ -90,6 +108,9 @@ function runSshChannelPrecheck(args: {
       channel.stderr.off('data', collectStderr)
       channel.off('exit', onExit)
       channel.off('close', onClose)
+      if (!cancelled && !timedOut) {
+        consumeLateSshErrors(channel, closed)
+      }
     }
     const settle = (resultExitCode: number | null, error: string | null): void => {
       if (settled) {

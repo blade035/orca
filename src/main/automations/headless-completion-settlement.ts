@@ -44,6 +44,7 @@ export function settleHeadlessAutomationCompletion(args: {
         runId: args.runId,
         status: 'dispatch_failed',
         ...args.target,
+        precheckResult: args.precheckResult,
         error: error instanceof Error ? error.message : String(error)
       })
     )
