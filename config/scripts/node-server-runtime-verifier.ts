@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { removeHostTree } from '../../src/main/host-tree-removal'
+import { normalizeRuntimePathForComparison } from '../../src/shared/cross-platform-path'
 import { decodePairingOffer, type PairingOffer } from '../../src/shared/pairing'
 import { sendRemoteRuntimeRequest } from '../../src/shared/remote-runtime-client'
 import type { RuntimeStatus, RuntimeTerminalRead } from '../../src/shared/runtime-types'
@@ -219,9 +220,20 @@ async function verifyGitWorkspace(pairing: PairingOffer): Promise<void> {
     { repo: `id:${added.repo.id}` }
   )
   assert(
-    listed.worktrees.some((worktree) => worktree.path === gitPath),
+    listed.worktrees.some((worktree) => isSameExistingHostPath(worktree.path, gitPath)),
     'Git worktree unavailable'
   )
+}
+
+function isSameExistingHostPath(left: string, right: string): boolean {
+  try {
+    return (
+      normalizeRuntimePathForComparison(realpathSync.native(left)) ===
+      normalizeRuntimePathForComparison(realpathSync.native(right))
+    )
+  } catch {
+    return false
+  }
 }
 
 async function verifyFolderWorkspaceAndTerminal(pairing: PairingOffer): Promise<{
