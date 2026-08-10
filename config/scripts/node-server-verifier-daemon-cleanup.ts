@@ -39,6 +39,14 @@ async function shutdownDaemon(
   let requestError: unknown
   try {
     await client.ensureConnectedWithin(5_000)
+    const { sessions } = await client.request<{
+      sessions: { sessionId: string; isAlive: boolean }[]
+    }>('listSessions', undefined, 10_000)
+    for (const session of sessions) {
+      if (session.isAlive) {
+        await client.request('kill', { sessionId: session.sessionId, immediate: true }, 10_000)
+      }
+    }
     await client.request('shutdown', { killSessions: true }, 10_000)
   } catch (error) {
     requestError = error
