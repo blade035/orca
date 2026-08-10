@@ -53,6 +53,10 @@
     "dev-stable-name": "pnpm run ensure:electron-runtime && node config/scripts/run-electron-vite-dev.mjs --stable-name",
     "dev:web": "vite --config vite.web.config.ts --host 127.0.0.1",
     "build:relay": "node config/scripts/build-relay.mjs",
+    "build:node-server": "node config/scripts/build-node-server-web-client.mjs && node config/scripts/build-node-server.mjs",
+    "verify:node-server-runtime": "node config/scripts/run-node-server-runtime-verifier.mjs",
+    "verify:node-server-package": "node config/scripts/verify-node-server-package.mjs",
+    "verify:node-server-docker": "node config/scripts/verify-node-server-docker.mjs",
     "build:computer-macos": "node config/scripts/build-computer-macos.mjs",
     "build:notification-status-macos": "node config/scripts/build-notification-status-macos.mjs",
     "build:native": "node config/scripts/build-native-for-platform.mjs",
@@ -205,6 +209,7 @@
     "electron-vite": "^5.0.0",
     "emoji-picker-react": "^4.19.1",
     "emojibase-data": "17.0.0",
+    "esbuild": "0.27.7",
     "happy-dom": "^20.9.0",
     "html-to-image": "^1.11.13",
     "husky": "^9.1.7",
@@ -293,6 +298,7 @@
       ]
     },
     "onlyBuiltDependencies": [
+      "@homebridge/node-pty-prebuilt-multiarch",
       "@parcel/watcher",
       "cpu-features",
       "esbuild",

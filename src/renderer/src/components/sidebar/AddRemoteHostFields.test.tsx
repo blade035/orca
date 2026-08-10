@@ -15,6 +15,28 @@ function loopbackAccessLink(): string {
 }
 
 describe('RemoteServerFields', () => {
+  it('shows the npm server setup before the access-link fields', () => {
+    const pairingCode = loopbackAccessLink()
+    const markup = renderToStaticMarkup(
+      <RemoteServerFields
+        name="Remote workstation"
+        pairingCode={pairingCode}
+        parsedLink={parseHostAccessLink(pairingCode)}
+        disabled={false}
+        onNameChange={vi.fn()}
+        onPairingCodeChange={vi.fn()}
+        allowLoopback={false}
+        onAllowLoopbackChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    )
+
+    expect(markup.indexOf('npx @stablyai/orca@latest')).toBeLessThan(
+      markup.indexOf('add-server-name')
+    )
+    expect(markup).toContain('Copy server command')
+  })
+
   it('associates blocked loopback guidance with the access-link input', () => {
     const pairingCode = loopbackAccessLink()
     const markup = renderToStaticMarkup(

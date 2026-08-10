@@ -11,6 +11,7 @@ import {
 import type { ParseHostAccessLinkResult } from '../../../../shared/remote-pairing-address'
 import { applyParsedSshHostInput, type EditingTarget } from '../settings/ssh-target-draft'
 import { SshHostAdvancedFields } from '../settings/SshHostAdvancedFields'
+import { NodeServerSetupCallout } from '../settings/NodeServerSetupCallout'
 
 export function SshHostFields({
   form,
@@ -176,6 +177,7 @@ export function RemoteServerFields({
         onSubmit()
       }}
     >
+      <NodeServerSetupCallout />
       <div className="space-y-1.5">
         <Label htmlFor="add-server-name">
           {translate('auto.components.sidebar.AddRemoteHostDialog.serverName', 'Name in Orca')}

@@ -1,0 +1,32 @@
+{
+  "name": "@stablyai/orca",
+  "version": "1.4.178-rc.2",
+  "description": "Browserless Orca host for remote desktop and web clients",
+  "homepage": "https://github.com/stablyai/orca",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stablyai/orca.git"
+  },
+  "bin": {
+    "orca": "dist/cli.js",
+    "orca-ide": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@parcel/watcher": "2.5.6",
+    "node-pty": "npm:@homebridge/node-pty-prebuilt-multiarch@0.14.1",
+    "ssh2": "1.17.0",
+    "tweetnacl": "1.0.3",
+    "ws": "8.21.0"
+  },
+  "engines": {
+    "node": "24"
+  }
+}

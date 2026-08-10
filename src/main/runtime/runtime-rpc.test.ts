@@ -5638,6 +5638,29 @@ describe('OrcaRuntimeRpcServer WebSocket bind host (STA-2370)', () => {
     }
   })
 
+  it('binds only the standalone host interface when wsBindHost is set', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
+    const server = new OrcaRuntimeRpcServer({
+      runtime: new OrcaRuntimeService(),
+      userDataPath,
+      enableWebSocket: true,
+      wsPort: 0,
+      wsBindHost: '127.0.0.1'
+    })
+
+    await server.start()
+    try {
+      expect(wsTransportOf(server)?.resolvedHost).toBe('127.0.0.1')
+      await server.createMobilePairingOffer({
+        address: '100.64.1.20',
+        connectionMode: 'local-only'
+      })
+      expect(wsTransportOf(server)?.resolvedHost).toBe('127.0.0.1')
+    } finally {
+      await server.stop()
+    }
+  })
+
   it('binds all interfaces at startup when a previously-connected device can reconnect', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
     // Why: a device that has actually connected (lastSeenAt > 0) may reconnect, so the listener must be

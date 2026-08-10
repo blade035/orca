@@ -132,6 +132,28 @@ describe('PR workflow parallelism', () => {
     expect(node18Index).toBeLessThan(smokeIndex)
   })
 
+  it('gates the Node server package on Linux and Windows', () => {
+    const job = workflow.jobs.node_server_package
+
+    expect(job.strategy.matrix.os).toEqual(['ubuntu-latest', 'windows-2022'])
+    expect(
+      job.steps.find((step) => step.uses === './.github/actions/install-node-dependencies').with[
+        'native-runtime'
+      ]
+    ).toBe('node')
+    expect(job.steps.find((step) => step.name === 'Build Node server package').run).toBe(
+      'pnpm run build:node-server'
+    )
+    expect(job.steps.find((step) => step.name === 'Verify installed package and runtime').run).toBe(
+      'pnpm run verify:node-server-package'
+    )
+    const dockerStep = job.steps.find(
+      (step) => step.name === 'Verify Ubuntu 20.04 and glibc 2.31 floor'
+    )
+    expect(dockerStep.if).toBe("runner.os == 'Linux'")
+    expect(dockerStep.run).toBe('pnpm run verify:node-server-docker -- --ubuntu 20.04')
+  })
+
   it('restores the pnpm store before dependency installation', () => {
     const steps = dependencyAction.runs.steps
     const pnpmIndex = steps.findIndex((step) => step.name === 'Setup pnpm')
@@ -214,6 +236,7 @@ describe('PR workflow parallelism', () => {
       'shell_contracts',
       'test',
       'managed_hook_node18',
+      'node_server_package',
       'package',
       'package_windows'
     ])
@@ -222,5 +245,7 @@ describe('PR workflow parallelism', () => {
     )
     expect(verifyStep.env.MANAGED_HOOK_NODE18).toBe('${{ needs.managed_hook_node18.result }}')
     expect(verifyStep.run).toContain('"$MANAGED_HOOK_NODE18"')
+    expect(verifyStep.env.NODE_SERVER_PACKAGE).toBe('${{ needs.node_server_package.result }}')
+    expect(verifyStep.run).toContain('"$NODE_SERVER_PACKAGE"')
   })
 })

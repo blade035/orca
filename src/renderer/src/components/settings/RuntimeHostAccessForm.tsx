@@ -8,6 +8,7 @@ import { Checkbox } from '../ui/checkbox'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { translate } from '@/i18n/i18n'
+import { NodeServerSetupCallout } from './NodeServerSetupCallout'
 import {
   translateHostAccessLinkError,
   translateRemotePairingEndpointKind,
@@ -66,14 +67,17 @@ export function RuntimeHostAccessForm({
         }
       }}
     >
-      <div className="space-y-2 rounded-md border border-border/60 bg-background/60 p-3">
-        <div className="text-sm font-medium">
+      <NodeServerSetupCallout />
+
+      <details className="group text-xs">
+        <summary className="flex cursor-pointer list-none items-center gap-1 font-medium text-muted-foreground">
           {translate(
-            'auto.components.settings.RuntimeHostAccessForm.getLink',
-            'Get an access link from the other host'
+            'auto.components.settings.RuntimeHostAccessForm.desktopInstructions',
+            'Already have the Orca desktop app on that computer?'
           )}
-        </div>
-        <ol className="ml-4 list-decimal space-y-1 text-xs text-muted-foreground">
+          <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+        </summary>
+        <ol className="mt-2 ml-4 list-decimal space-y-1 text-muted-foreground">
           <li>
             {translate(
               'auto.components.settings.RuntimeHostAccessForm.stepOpenShare',
@@ -93,7 +97,7 @@ export function RuntimeHostAccessForm({
             )}
           </li>
         </ol>
-      </div>
+      </details>
 
       <div className="grid gap-3 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)]">
         <div className="space-y-2">
@@ -312,14 +316,7 @@ export function RuntimeHostAccessForm({
               </span>
             </span>
           </label>
-        ) : (
-          <p className="mt-2 text-muted-foreground">
-            {translate(
-              'auto.components.settings.RuntimeHostAccessForm.headlessHelp',
-              'Using headless orca serve? Run orca serve --pairing-address <reachable-host> on the other computer.'
-            )}
-          </p>
-        )}
+        ) : null}
       </details>
 
       <div className="flex justify-end gap-2">

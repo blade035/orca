@@ -1,21 +1,58 @@
 # Headless Linux Server
 
-Use this guide when you want to run `orca serve` on a Linux machine without a
-desktop session, such as an Ubuntu VPS or a remote build box.
+Use this guide to run Orca on an Ubuntu VPS or remote build computer.
 
-`orca serve` starts the Orca runtime without opening the desktop window. On
-Linux, the packaged AppImage still needs the libraries that Electron expects at
-startup. Current Orca builds start Xvfb automatically for `orca serve` when no
-`DISPLAY` is set, but Xvfb must be installed first. A separate D-Bus session is
-not required. When `DISPLAY` is set, Orca uses that display instead of starting
-a competing Xvfb process.
+## Browserless Node server (recommended)
+
+Install Node.js 24, then run:
+
+```bash
+npx @stablyai/orca@latest
+```
+
+This package contains the Orca runtime and web client, but not Electron or Chromium. It needs no
+desktop session, Xvfb, FUSE, or AppImage extraction. Browser panes, computer-use, emulators, and
+speech are unavailable on this host; workspaces, files, Git, terminals, agents, orchestration,
+pairing, and the web client remain available.
+
+At startup Orca uses a Tailscale IPv4 address when one is available. Otherwise it binds to
+localhost and, when started over SSH, prints a tunnel command using the actual selected port. It
+never changes Tailscale or firewall configuration.
+
+For automation, provide the listener and advertised address explicitly:
+
+```bash
+npx @stablyai/orca@latest serve \
+  --listen 100.64.1.20 \
+  --pairing-address 100.64.1.20 \
+  --port 6768 \
+  --json
+```
+
+`--listen` selects the local interface. `--pairing-address` selects the address embedded in access
+links. Supplying only `--pairing-address` is an explicit network-exposure choice and listens on all
+interfaces; use both flags when the server should be reachable only through one interface.
+
+The package stores state in `$XDG_STATE_HOME/orca` or `~/.local/state/orca`. Override it with
+`--data-dir` or `ORCA_SERVER_DATA_DIR`. Pairing identity and daemon terminals survive server
+restarts. Stop the foreground server with `Ctrl+C`.
+
+For the package architecture, security policy, capability behavior, and validation topology, see
+the [npm server design](./npm-server-design.md).
+
+## Desktop/AppImage server (browser-capable)
+
+Use the AppImage path only when the remote host must provide Orca browser panes. `orca serve`
+starts the desktop runtime without opening its window, but Electron still needs Linux desktop
+libraries. Current builds start Xvfb automatically when no `DISPLAY` is set, but Xvfb must be
+installed first. A separate D-Bus session is not required.
 
 The supported deployment matrix covers Ubuntu 20.04, 22.04, and 24.04 and
 current Debian stable — anything with glibc 2.31 or newer (see
 [Linux glibc compatibility](./linux-glibc-compatibility.md)). Package names can
 differ on other Debian-derived releases.
 
-## Ubuntu and Debian prerequisites
+### Ubuntu and Debian prerequisites
 
 Install the AppImage runtime dependency and Xvfb:
 

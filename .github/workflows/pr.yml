@@ -331,6 +331,34 @@ jobs:
       - name: Smoke managed-hook companions
         run: node config/scripts/smoke-managed-hook-runtime-node18.mjs
 
+  node_server_package:
+    name: node server package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+
+      - name: Build Node server package
+        run: pnpm run build:node-server
+
+      - name: Verify installed package and runtime
+        run: pnpm run verify:node-server-package
+
+      - name: Verify Ubuntu 20.04 and glibc 2.31 floor
+        if: runner.os == 'Linux'
+        run: pnpm run verify:node-server-docker -- --ubuntu 20.04
+
   package:
     name: package
     runs-on: ubuntu-latest
@@ -499,6 +527,7 @@ jobs:
       - shell_contracts
       - test
       - managed_hook_node18
+      - node_server_package
       - package
       - package_windows
     runs-on: ubuntu-latest
@@ -521,6 +550,7 @@ jobs:
           SHELL_CONTRACTS: ${{ needs.shell_contracts.result }}
           TEST: ${{ needs.test.result }}
           MANAGED_HOOK_NODE18: ${{ needs.managed_hook_node18.result }}
+          NODE_SERVER_PACKAGE: ${{ needs.node_server_package.result }}
           PACKAGE: ${{ needs.package.result }}
           PACKAGE_WINDOWS: ${{ needs.package_windows.result }}
         run: |
@@ -532,6 +562,7 @@ jobs:
             "$SHELL_CONTRACTS" \
             "$TEST" \
             "$MANAGED_HOOK_NODE18" \
+            "$NODE_SERVER_PACKAGE" \
             "$PACKAGE" \
             "$PACKAGE_WINDOWS"; do
             if [ "$result" != "success" ]; then

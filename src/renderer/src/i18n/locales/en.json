@@ -10504,7 +10504,8 @@
           "networkConnection": "Network connection",
           "notAttempted": "Not attempted",
           "saveFailed": "Could not save the host",
-          "saveFailedHelp": "The host was verified, but Orca could not save it. Check the name and local settings storage, then try again."
+          "saveFailedHelp": "The host was verified, but Orca could not save it. Check the name and local settings storage, then try again.",
+          "desktopInstructions": "Already have the Orca desktop app on that computer?"
         },
         "CloudVmSetupGuide": {
           "title": "Create a Cloud VM",
@@ -10665,6 +10666,14 @@
               "disconnectFailed": "Could not remove the saved Bitbucket credential."
             }
           }
+        },
+        "NodeServerSetupCallout": {
+          "copied": "Copied server command.",
+          "copyFailed": "Failed to copy server command.",
+          "title": "Run Orca on a remote computer",
+          "description": "With Node.js 24 installed, run this command there—no desktop app, display, or Electron install required.",
+          "copy": "Copy server command",
+          "networking": "Orca uses Tailscale when available. Otherwise it stays on localhost and prints an SSH tunnel command."
         }
       },
       "right": {

@@ -29,6 +29,15 @@ function renderForm(endpoint: string): string {
 }
 
 describe('RuntimeHostAccessForm', () => {
+  it('leads with the browserless server command and networking path', () => {
+    const markup = renderForm('ws://100.76.32.125:6768')
+    expect(markup).toContain('npx @stablyai/orca@latest')
+    expect(markup).toContain('no desktop app, display, or Electron install required')
+    expect(markup).toContain('Tailscale')
+    expect(markup).toContain('SSH tunnel')
+    expect(markup).toContain('Already have the Orca desktop app')
+  })
+
   it('shows the sanitized destination without credential material', () => {
     const markup = renderForm('ws://100.76.32.125:6768')
     expect(markup).toContain('100.76.32.125:6768')
