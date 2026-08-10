@@ -23,4 +23,14 @@ describe('discoverServerPairingAddress', () => {
       source: 'loopback'
     })
   })
+
+  it.each(['999.999.999.999', '256.0.0.1', '01.2.3.4'])(
+    'stays on loopback for invalid Tailscale IPv4 output %s',
+    async (address) => {
+      await expect(discoverServerPairingAddress(undefined, async () => address)).resolves.toEqual({
+        address: '127.0.0.1',
+        source: 'loopback'
+      })
+    }
+  )
 })

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { isIPv4 } from 'node:net'
 
 const TAILSCALE_ADDRESS_TIMEOUT_MS = 1_500
 
@@ -10,7 +11,7 @@ export async function discoverServerPairingAddress(
     return { address: explicitAddress, source: 'explicit' }
   }
   const tailscaleAddress = await readTailscaleAddress()
-  return tailscaleAddress
+  return tailscaleAddress && isIPv4(tailscaleAddress)
     ? { address: tailscaleAddress, source: 'tailscale' }
     : { address: '127.0.0.1', source: 'loopback' }
 }
@@ -27,7 +28,7 @@ function readTailscaleIpv4(): Promise<string | null> {
           return
         }
         const address = stdout.trim().split(/\s+/)[0]
-        resolve(/^\d{1,3}(?:\.\d{1,3}){3}$/.test(address ?? '') ? address : null)
+        resolve(address ?? null)
       }
     )
   })
