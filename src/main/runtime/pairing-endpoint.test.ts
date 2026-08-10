@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatBoundWebSocketEndpoint,
   resolveAdvertisedPairingEndpoint,
   resolveAdvertisedPairingHostname
 } from './pairing-endpoint'
 import { PAIRING_OFFER_VERSION, PairingOfferSchema } from '../../shared/mobile-relay-pairing-offer'
 import { PAIRING_ENDPOINT_MAX_CHARACTERS } from '../../shared/mobile-pairing-protocol-limits'
 import { parseManualNetworkAddress } from '../../shared/network/manual-address'
+
+describe('formatBoundWebSocketEndpoint', () => {
+  it.each([
+    ['127.0.0.1', 'ws://127.0.0.1:6768'],
+    ['::1', 'ws://[::1]:6768'],
+    ['[::1]', 'ws://[::1]:6768']
+  ])('formats %s as a valid WebSocket URL', (host, endpoint) => {
+    expect(formatBoundWebSocketEndpoint(host, 6768)).toBe(endpoint)
+    expect(new URL(endpoint).protocol).toBe('ws:')
+  })
+})
 
 describe('resolveAdvertisedPairingEndpoint', () => {
   const bound = 'ws://0.0.0.0:6768'

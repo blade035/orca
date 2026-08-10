@@ -2,26 +2,27 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import packageJson from '../../package.json' with { type: 'json' }
-import {
-  disconnectDaemon,
-  getDaemonProvider,
-  initDaemonPtyProvider
-} from '../main/daemon/daemon-init'
-import { getLocalPtyProvider, registerHeadlessPtyRuntime } from '../main/ipc/pty'
+import { disconnectDaemon, initDaemonPtyProvider } from '../main/daemon/daemon-init'
 import { initDataPath, Store } from '../main/persistence'
-import { OrcaRuntimeService } from '../main/runtime/orca-runtime'
+import type { OrcaRuntimeService } from '../main/runtime/orca-runtime'
 import { resolveAdvertisedPairingEndpoint } from '../main/runtime/pairing-endpoint'
 import { OrcaRuntimeRpcServer } from '../main/runtime/runtime-rpc'
 import { ServeReadinessPublisher } from '../main/server/serve-readiness'
 import { HEADLESS_RUNTIME_WINDOW_ID } from '../shared/runtime-types'
 import { configureNodeHostEnvironment } from './node-host-electron-facade'
+import { createBrowserlessRuntimeComposition } from './browserless-runtime-composition'
 import { discoverServerPairingAddress } from './server-address-discovery'
 import { parseServerCliArguments, renderServerHelp } from './server-cli-arguments'
 import { ensureServerDataPath, resolveServerDataPath } from './server-paths'
+import {
+  acquireServerProfileProcessLock,
+  ServerProfileProcessLockError
+} from './server-profile-process-lock'
 import { createServerWindowGraph } from './server-window-graph'
+import { requireServerWebSocketEndpoint } from './server-websocket-readiness'
 
-async function main(): Promise<void> {
-  const args = parseServerCliArguments(process.argv.slice(2))
+export async function runNodeServer(argv = process.argv.slice(2)): Promise<void> {
+  const args = parseServerCliArguments(argv)
   if (args.command === 'help') {
     process.stdout.write(`${renderServerHelp()}\n`)
     return
@@ -35,14 +36,18 @@ async function main(): Promise<void> {
   const dataPath = resolveServerDataPath(args.dataPath)
   ensureServerDataPath(dataPath)
   configureNodeHostEnvironment({ appPath, dataPath, version: packageJson.version })
+  process.env.ORCA_APP_VERSION = packageJson.version
+  const profileLock = await acquireServerProfileProcessLock(dataPath).catch((error: unknown) => {
+    if (error instanceof ServerProfileProcessLockError && error.reason === 'already_owned') {
+      process.exitCode = 3
+    }
+    throw error
+  })
   initDataPath()
 
   const store = new Store({ dataFile: join(dataPath, 'orca-data.json') })
-  const runtime = new OrcaRuntimeService(store, undefined, {
-    canRecoverPersistentLocalPtys: () => getDaemonProvider() !== null,
-    getDesktopWindowStatus: () => 'blocked',
-    getLocalProvider: () => getLocalPtyProvider()
-  })
+  const composition = createBrowserlessRuntimeComposition({ store, dataPath })
+  const { runtime } = composition
 
   let rpc: OrcaRuntimeRpcServer | null = null
   let shuttingDown = false
@@ -51,17 +56,28 @@ async function main(): Promise<void> {
       return
     }
     shuttingDown = true
-    await Promise.allSettled([
-      rpc?.stop() ?? Promise.resolve(),
-      disconnectDaemon(),
-      store.flushAsync()
+    const lifecycleResults = await settleLifecycleSteps([
+      () => rpc?.stop() ?? Promise.resolve(),
+      () => composition.stop(),
+      () => disconnectDaemon(),
+      () => store.flushAsync()
     ])
-    process.exitCode = exitCode
+    const lifecycleFailed = lifecycleResults.some((result) => result.status === 'rejected')
+    const lockReleased = await profileLock.release().then(
+      () => true,
+      (error) => {
+        process.stderr.write(
+          `Orca server failed to release its profile lock: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+        return false
+      }
+    )
+    process.exitCode = lifecycleFailed || !lockReleased ? 1 : exitCode
   }
 
   try {
     await initDaemonPtyProvider(undefined, { macosLoginSessionWatch: false })
-    registerHeadlessPtyRuntime(runtime, undefined, () => store.getSettings(), undefined, store)
+    await composition.startAfterDaemon()
     runtime.syncWindowGraph(HEADLESS_RUNTIME_WINDOW_ID, createServerWindowGraph(store))
     const pairingAddress = await discoverServerPairingAddress(args.pairingAddress)
     validatePairingAddress(pairingAddress.address)
@@ -81,6 +97,7 @@ async function main(): Promise<void> {
       webClientRoot: resolveWebClientRoot(appPath)
     })
     await rpc.start()
+    requireServerWebSocketEndpoint(rpc.getWebSocketEndpoint())
     await publishReadiness(runtime, rpc, args, pairingAddress.address)
     if (!args.json && pairingAddress.source === 'loopback' && process.env.SSH_CONNECTION) {
       const resolvedPort = new URL(rpc.getWebSocketEndpoint()!).port
@@ -88,12 +105,32 @@ async function main(): Promise<void> {
         `SSH tunnel: ssh -L ${resolvedPort}:127.0.0.1:${resolvedPort} ${process.env.USER ?? 'user'}@<server>\n`
       )
     }
-    process.once('SIGINT', () => void shutdown(0).then(() => process.exit(0)))
-    process.once('SIGTERM', () => void shutdown(0).then(() => process.exit(0)))
+    const stopForSignal = (): void => {
+      void shutdown(0).then(() =>
+        process.exit(typeof process.exitCode === 'number' ? process.exitCode : 0)
+      )
+    }
+    process.once('SIGINT', stopForSignal)
+    process.once('SIGTERM', stopForSignal)
   } catch (error) {
     await shutdown(1)
     throw error
   }
+}
+
+async function settleLifecycleSteps(
+  steps: readonly (() => Promise<void>)[]
+): Promise<PromiseSettledResult<void>[]> {
+  const results: PromiseSettledResult<void>[] = []
+  for (const step of steps) {
+    try {
+      await step()
+      results.push({ status: 'fulfilled', value: undefined })
+    } catch (reason) {
+      results.push({ status: 'rejected', reason })
+    }
+  }
+  return results
 }
 
 function validatePairingAddress(address: string): void {
@@ -114,10 +151,8 @@ async function publishReadiness(
   args: ReturnType<typeof parseServerCliArguments>,
   pairingAddress: string
 ): Promise<void> {
-  const boundEndpoint = rpc.getWebSocketEndpoint()
-  const advertised = boundEndpoint
-    ? resolveAdvertisedPairingEndpoint(boundEndpoint, pairingAddress)
-    : null
+  const boundEndpoint = requireServerWebSocketEndpoint(rpc.getWebSocketEndpoint())
+  const advertised = resolveAdvertisedPairingEndpoint(boundEndpoint, pairingAddress)
   const pairing = args.noPairing
     ? {
         available: false as const,
@@ -129,7 +164,7 @@ async function publishReadiness(
     {
       runtimeId: runtime.getRuntimeId(),
       boundEndpoint,
-      advertisedEndpoint: advertised?.ok ? advertised.endpoint : null,
+      advertisedEndpoint: advertised.ok ? advertised.endpoint : null,
       managedWslCliReconciliation: 'settled',
       pairing: pairing.available
         ? {
@@ -147,9 +182,9 @@ async function publishReadiness(
   )
 }
 
-void main().catch((error) => {
+export function reportNodeServerFailure(error: unknown): void {
   process.stderr.write(
     `Orca server failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`
   )
-  process.exitCode = 1
-})
+  process.exitCode ??= 1
+}

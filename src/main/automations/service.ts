@@ -14,6 +14,11 @@ import { runAutomationPrecheck } from './precheck-runner'
 import { resolveAutomationRunTarget, type AutomationRunTargetResult } from './run-target-resolution'
 import { collectAutomationRunUsage } from './run-usage-collection'
 import type { HeadlessAutomationDispatcher } from './headless-dispatch'
+import { HeadlessAutomationWorkDrain } from './headless-work-drain'
+import {
+  buildHeadlessAutomationRunTarget,
+  settleHeadlessAutomationCompletion
+} from './headless-completion-settlement'
 import { clearAutomationDispatchTokens, createAutomationDispatchToken } from './dispatch-tokens'
 import {
   didAutomationPrecheckPass,
@@ -29,10 +34,12 @@ export class AutomationService {
   private webContents: WebContents | null = null
   private rendererReady = false
   private evaluating = false
+  private readonly headlessWork: HeadlessAutomationWorkDrain
   private readonly claudeUsage: ClaudeUsageStore | null
   private readonly codexUsage: CodexUsageStore | null
   private readonly allowRemoteHostScheduling: boolean
   private readonly headlessDispatcher: HeadlessAutomationDispatcher | null
+  private readonly headlessStopController: AbortController | null
 
   constructor(
     store: Store,
@@ -50,6 +57,8 @@ export class AutomationService {
     this.codexUsage = opts.codexUsage ?? null
     this.allowRemoteHostScheduling = opts.allowRemoteHostScheduling ?? false
     this.headlessDispatcher = opts.headlessDispatcher ?? null
+    this.headlessWork = new HeadlessAutomationWorkDrain(this.headlessDispatcher !== null)
+    this.headlessStopController = this.headlessDispatcher ? new AbortController() : null
   }
 
   setWebContents(webContents: WebContents | null): void {
@@ -59,7 +68,7 @@ export class AutomationService {
 
   setRendererReady(): void {
     this.rendererReady = true
-    void this.evaluateDueRuns()
+    void this.headlessWork.track(this.evaluateDueRuns())
   }
 
   start(): void {
@@ -67,21 +76,26 @@ export class AutomationService {
       return
     }
     this.timer = setInterval(() => {
-      void this.evaluateDueRuns()
+      void this.headlessWork.track(this.evaluateDueRuns())
     }, this.tickMs)
     // Why: headless serve never gets a renderer-ready IPC, but due runs still
     // need the same startup catch-up pass desktop gets after renderer attach.
     if (this.rendererReady || this.headlessDispatcher) {
-      void this.evaluateDueRuns()
+      void this.headlessWork.track(this.evaluateDueRuns())
     }
   }
 
   stop(): void {
-    if (!this.timer) {
-      return
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
     }
-    clearInterval(this.timer)
-    this.timer = null
+  }
+
+  async stopAndDrain(): Promise<void> {
+    this.stop()
+    this.headlessStopController?.abort()
+    await this.headlessWork.drain()
   }
 
   async runNow(automationId: string): Promise<AutomationRun> {
@@ -90,10 +104,14 @@ export class AutomationService {
       throw new Error('Automation not found.')
     }
     const run = this.store.createAutomationRun(automation, Date.now(), 'manual')
-    return await this.requestDispatch(automation, run)
+    return await this.headlessWork.track(this.requestDispatch(automation, run))
   }
 
-  async runPrecheck(automationId: string, runId: string): Promise<AutomationPrecheckResult | null> {
+  async runPrecheck(
+    automationId: string,
+    runId: string,
+    signal?: AbortSignal
+  ): Promise<AutomationPrecheckResult | null> {
     const automation = this.store.listAutomations().find((entry) => entry.id === automationId)
     if (!automation) {
       throw new Error('Automation not found.')
@@ -128,7 +146,8 @@ export class AutomationService {
       target:
         automation.executionTargetType === 'ssh'
           ? { type: 'ssh', cwd: target.cwd, connectionId: automation.executionTargetId }
-          : { type: 'local', cwd: target.cwd }
+          : { type: 'local', cwd: target.cwd },
+      ...(signal ? { signal } : {})
     })
   }
 
@@ -256,7 +275,7 @@ export class AutomationService {
   ): Promise<AutomationRun> {
     const precheckResult =
       run.trigger === 'scheduled' && automation.precheck
-        ? await this.runPrecheck(automation.id, run.id)
+        ? await this.runPrecheck(automation.id, run.id, this.headlessStopController?.signal)
         : null
     if (precheckResult && !didAutomationPrecheckPass(precheckResult)) {
       return this.store.updateAutomationRun({
@@ -268,14 +287,13 @@ export class AutomationService {
       })
     }
     try {
-      const launch = await this.headlessDispatcher!({ automation, run, target })
-      const launchRunTarget = {
-        workspaceId: launch.workspaceId,
-        workspaceDisplayName: launch.workspaceDisplayName ?? null,
-        terminalSessionId: launch.terminalSessionId,
-        terminalPaneKey: launch.terminalPaneKey ?? null,
-        terminalPtyId: launch.terminalPtyId ?? null
-      }
+      const launch = await this.headlessDispatcher!({
+        automation,
+        run,
+        target,
+        signal: this.headlessStopController?.signal
+      })
+      const launchRunTarget = buildHeadlessAutomationRunTarget(launch)
       const updated = this.store.updateAutomationRun({
         runId: run.id,
         status: 'dispatched',
@@ -283,25 +301,15 @@ export class AutomationService {
         error: null
       })
       if (launch.completion) {
-        void launch.completion
-          .then((completion) =>
-            this.markDispatchResult({
-              runId: run.id,
-              status: completion.status,
-              ...launchRunTarget,
-              precheckResult,
-              outputSnapshot: completion.outputSnapshot ?? null,
-              error: completion.error ?? null
-            })
-          )
-          .catch((error) =>
-            this.markDispatchResult({
-              runId: run.id,
-              status: 'dispatch_failed',
-              ...launchRunTarget,
-              error: error instanceof Error ? error.message : String(error)
-            })
-          )
+        void this.headlessWork.track(
+          settleHeadlessAutomationCompletion({
+            completion: launch.completion,
+            runId: run.id,
+            target: launchRunTarget,
+            precheckResult,
+            mark: (result) => this.markDispatchResult(result)
+          })
+        )
       }
       return updated
     } catch (error) {

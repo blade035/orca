@@ -53,7 +53,7 @@ try {
     'orca',
     '--help'
   ])
-  if (!help.includes('Usage: orca-ide')) {
+  if (!help.includes('Usage: orca <command> [options]')) {
     throw new Error('installed CLI help is unavailable')
   }
   const version = (
@@ -73,7 +73,9 @@ try {
   await run(process.execPath, [
     join(repoRoot, 'config', 'scripts', 'run-node-server-runtime-verifier.mjs'),
     '--cli',
-    cliPath
+    cliPath,
+    '--expected-version',
+    installedManifest.version
   ])
   process.stdout.write(
     `Node server package verification passed (${packed.size} bytes packed, ${packed.unpackedSize} bytes unpacked)\n`
@@ -116,6 +118,9 @@ function verifyManifest(manifest) {
   }
   if (manifest.license !== 'MIT') {
     throw new Error('installed package license is inconsistent')
+  }
+  if (manifest.publishConfig?.access !== 'public' || manifest.publishConfig?.tag !== 'rc') {
+    throw new Error('installed package publish configuration is inconsistent')
   }
   if (manifest.bin?.orca !== 'dist/cli.js' || manifest.bin?.['orca-ide'] !== 'dist/cli.js') {
     throw new Error('installed package bins are inconsistent')

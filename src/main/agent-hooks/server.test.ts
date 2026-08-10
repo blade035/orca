@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { createConnection } from 'node:net'
 import {
   existsSync,
   mkdirSync,
@@ -7935,6 +7936,28 @@ describe('Last-status persistence', () => {
     expect(existsSync(lastStatusPath())).toBe(true)
     const parsed = JSON.parse(readFileSync(lastStatusPath(), 'utf8'))
     expect(parsed.entries[PANE]?.payload?.prompt).toBe('flush me')
+  })
+
+  it('stopAndWait() joins open hook connections', async () => {
+    const server = new AgentHookServer()
+    await server.start({ env: 'production' })
+    const port = Number(server.buildPtyEnv().ORCA_AGENT_HOOK_PORT)
+    const socket = createConnection({ host: '127.0.0.1', port })
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve)
+      socket.once('error', reject)
+    })
+
+    let stopped = false
+    const stop = server.stopAndWait().then(() => {
+      stopped = true
+    })
+    await Promise.resolve()
+    expect(stopped).toBe(false)
+
+    socket.destroy()
+    await stop
+    expect(stopped).toBe(true)
   })
 })
 

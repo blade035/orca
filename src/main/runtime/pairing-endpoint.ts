@@ -13,6 +13,10 @@ export type PairingEndpointResolution =
       guidance: string
     }
 
+export function formatBoundWebSocketEndpoint(host: string, port: number): string {
+  return `ws://${bracketIpv6(host)}:${port}`
+}
+
 export function resolveAdvertisedPairingEndpoint(
   boundEndpoint: string,
   advertisedAddress: string | null | undefined

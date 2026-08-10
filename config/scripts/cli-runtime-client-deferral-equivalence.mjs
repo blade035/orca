@@ -35,12 +35,12 @@ const TOUCHED = [
 // silently become identical to the new one and every case would pass
 // vacuously. Re-read the real call form out of the source and fail loudly.
 function assertMarkersFresh() {
-  const index = readFileSync(join(REPO, 'src/cli/index.ts'), 'utf8')
+  const program = readFileSync(join(REPO, 'src/cli/cli-program.ts'), 'utf8')
   const client = readFileSync(join(REPO, 'src/cli/runtime/client.ts'), 'utf8')
   const checks = [
-    ['src/cli/index.ts', index, 'await loadRuntimeClientClass()'],
-    ['src/cli/index.ts', index, "await import('./runtime-client.js')"],
-    ['src/cli/index.ts', index, "import type { RuntimeClient } from './runtime-client'"],
+    ['src/cli/cli-program.ts', program, 'await loadRuntimeClientClass()'],
+    ['src/cli/cli-program.ts', program, "await import('./runtime-client.js')"],
+    ['src/cli/cli-program.ts', program, "import type { RuntimeClient } from './runtime-client'"],
     ['src/cli/runtime/client.ts', client, 'await loadSendWebSocketRequest()'],
     ['src/cli/runtime/client.ts', client, "await import('./websocket-transport.js')"]
   ]

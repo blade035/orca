@@ -3,13 +3,16 @@ import { copyFileSync, mkdtempSync, rmSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { build } from 'esbuild'
+import { resolveNodeServerNpmInvocation } from './node-server-npm-invocation.mjs'
 
 const repoRoot = resolve(import.meta.dirname, '..', '..')
 const contextRoot = mkdtempSync(join(tmpdir(), 'orca-server-docker-'))
 const versions = readVersions()
+const npmInvocation = resolveNodeServerNpmInvocation()
 
 try {
-  const packOutput = await runCapture('npm', [
+  const packOutput = await runCapture(npmInvocation.command, [
+    ...npmInvocation.prefixArgs,
     'pack',
     join(repoRoot, 'resources', 'npm-server'),
     '--json',

@@ -47,7 +47,7 @@ import type {
   PairingProvisionRelayParams
 } from '../../shared/mobile-relay-credential-contract'
 import { encodePairingOffer, PAIRING_OFFER_VERSION } from '../../shared/pairing'
-import { resolveAdvertisedPairingEndpoint } from './pairing-endpoint'
+import { formatBoundWebSocketEndpoint, resolveAdvertisedPairingEndpoint } from './pairing-endpoint'
 import {
   decodeTerminalStreamFrame,
   type TerminalStreamFrame
@@ -1295,7 +1295,7 @@ export class OrcaRuntimeRpcServer {
     this.wsBoundHost = options.host
     return {
       transport: wsTransport,
-      endpoint: `ws://${options.host}:${wsTransport.resolvedPort}`
+      endpoint: formatBoundWebSocketEndpoint(options.host, wsTransport.resolvedPort)
     }
   }
 

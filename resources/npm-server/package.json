@@ -17,7 +17,8 @@
     "README.md"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "tag": "rc"
   },
   "dependencies": {
     "@parcel/watcher": "2.5.6",

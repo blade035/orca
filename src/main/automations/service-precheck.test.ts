@@ -226,4 +226,64 @@ describe('AutomationService prechecks', () => {
       error: 'Precheck exited with code 1.'
     })
   })
+
+  it('cancels and drains a scheduled headless precheck during shutdown', async () => {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    vi.setSystemTime(new Date(2026, 4, 13, 8, 59))
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Conditional headless check',
+      prompt: 'Check the repo',
+      precheck: { command: 'long-command', timeoutSeconds: 30 },
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'new_per_run',
+      timezone,
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date(2026, 4, 12, 0, 0).getTime()
+    })
+    let precheckSignal: AbortSignal | undefined
+    runAutomationPrecheckMock.mockImplementation(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise((resolve) => {
+          precheckSignal = signal
+          signal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                command: 'long-command',
+                exitCode: null,
+                timedOut: false,
+                durationMs: 1,
+                stdout: '',
+                stderr: '',
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                error: 'Precheck cancelled.',
+                startedAt: Date.now(),
+                completedAt: Date.now()
+              }),
+            { once: true }
+          )
+        })
+    )
+    const headlessDispatcher = vi.fn()
+    const service = new AutomationService(store, {
+      allowRemoteHostScheduling: true,
+      headlessDispatcher
+    })
+    vi.setSystemTime(new Date(2026, 4, 13, 9, 1))
+    service.start()
+    await vi.waitFor(() => expect(runAutomationPrecheckMock).toHaveBeenCalledTimes(1))
+
+    await service.stopAndDrain()
+
+    expect(precheckSignal?.aborted).toBe(true)
+    expect(headlessDispatcher).not.toHaveBeenCalled()
+    expect(store.listAutomationRuns(automation.id)[0]).toMatchObject({
+      status: 'skipped_precheck',
+      precheckResult: { error: 'Precheck cancelled.' }
+    })
+  })
 })

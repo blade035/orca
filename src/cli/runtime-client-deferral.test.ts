@@ -65,8 +65,8 @@ describe('RuntimeClient module-graph deferral', () => {
     }
   )
 
-  it('index.ts has no eager value-import of the runtime client', () => {
-    const source = readFileSync(join(CLI_DIR, 'index.ts'), 'utf8')
+  it('cli-program.ts has no eager value-import of the runtime client', () => {
+    const source = readFileSync(join(CLI_DIR, 'cli-program.ts'), 'utf8')
     expect(source).toContain("import type { RuntimeClient } from './runtime-client'")
     expect(source).not.toMatch(/^import \{[^}]*RuntimeClient[^}]*\} from '\.\/runtime-client'/m)
     expect(source).toContain("await import('./runtime-client.js')")

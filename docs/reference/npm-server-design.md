@@ -6,7 +6,7 @@ Orca should run as a remote host on a machine with Node.js without installing th
 desktop application. The npm distribution reuses the desktop host runtime, pairing protocol,
 terminal daemon, and web client while omitting Electron-only capabilities such as browser panes.
 
-The first-run contract is:
+The promoted stable first-run contract is:
 
 ```bash
 npx @stablyai/orca@latest
@@ -15,6 +15,10 @@ npx @stablyai/orca@latest
 On a headless machine this starts a foreground server, chooses a safe reachable address, and
 prints a web-client URL and pairing URL. A non-interactive `serve` command retains explicit
 listener, advertised-address, port, and JSON controls.
+
+The package is not published yet, so that command does not resolve during development. Release
+candidate testing uses `npx @stablyai/orca@rc`; `@latest` becomes valid only after an exact
+validated candidate is promoted.
 
 ## Problem
 
@@ -53,8 +57,16 @@ agents, and orchestration. The missing boundary is the process environment aroun
 
 ### Guided foreground start
 
+After stable promotion:
+
 ```bash
 npx @stablyai/orca@latest
+```
+
+Before promotion, release-candidate operators use the non-default dist-tag:
+
+```bash
+npx @stablyai/orca@rc
 ```
 
 Startup chooses an advertised address in this order:
@@ -88,7 +100,8 @@ Existing serve flags and readiness schema version 1 remain valid. New fields mus
 
 The public package is `@stablyai/orca`. The durable executable is `orca-ide`, avoiding conflicts
 with the Linux screen reader. The package also exposes `orca` so npm can select the expected bin
-for `npx @stablyai/orca`.
+for `npx @stablyai/orca`. The package is currently unpublished; source documentation must not
+describe `@latest` as available until registry promotion is complete.
 
 ## Architecture
 
@@ -123,6 +136,23 @@ interfaces rather than adding facade surface.
 CI inspects the built package, dependency manifest, and bundle metadata so an Electron runtime
 dependency cannot enter transitively.
 
+The package executable is the only process entry owner. Importing the reusable server composition
+must never start a listener by itself; this keeps `--help`, version, and non-server control commands
+from accidentally launching a second host.
+
+### Browserless service composition
+
+The Node composition root owns the non-Electron services that desktop runtime setup normally
+wires. It installs Claude and Codex account services, rate-limit collection and settings sync, and
+the account subscription backing exposed by runtime RPCs. A durable agent-session claim signer is
+loaded from the server profile.
+
+AgentHook supplies lifecycle and status snapshots, compatibility authority, PTY environment, and
+live Claude rate-limit observations. Headless PTY registration resolves managed Claude and Codex
+launch environments. The composition also installs orchestration transport and startup recovery,
+scheduled and manual headless automation dispatch, artifact cloud sharing, AI Vault Codex discovery
+and resume resolution, and commit-message agent environment resolution.
+
 ## Capability behavior
 
 The Node host publishes the existing runtime capabilities except those requiring a browser
@@ -145,6 +175,13 @@ The server stores state beneath an OS-standard Orca data directory. The director
 owner-only permissions where the platform supports POSIX modes. Pairing identity and device files
 reuse the current secure-file handling and survive package updates.
 
+The npm host deliberately uses a different default profile from the desktop app: `Orca Server`
+under the platform application-data directory on macOS and Windows, and `orca` under the XDG state
+directory on Linux. An explicit `--data-dir` or `ORCA_SERVER_DATA_DIR` still selects one npm profile
+for service deployments. A process-incarnation-fenced lock prevents two npm processes from writing
+that profile concurrently; different npm profiles and the desktop default profile can remain live
+at the same time.
+
 Foreground startup prints a pairing credential unless `--no-pairing` is set. Automation and
 service workflows that retain logs must either use that flag or treat readiness output as a secret.
 Pairing material stays in URL fragments for the web client so reverse proxies and referrer headers
@@ -165,12 +202,14 @@ considered only after the server build and native dependency matrix pass there.
 
 ## Shutdown and persistence
 
-SIGINT and SIGTERM stop listeners, flush the store, and detach from the terminal daemon. A normal
-server shutdown does not kill daemon-owned terminals. Startup reconnects to the same daemon and
-device identity.
+SIGINT, SIGTERM, and startup failure join one sequential teardown: stop RPC listeners; cancel local
+or SSH prechecks, abort and drain headless automations, and wait for AgentHook shutdown through the
+composition root; disconnect from the terminal daemon; flush the store; then release the profile
+lock. A failed step is recorded while later steps still run. A normal server shutdown does not kill
+daemon-owned terminals. Startup reconnects to the same daemon and device identity.
 
 Every listener, socket, timer, and signal handler installed by the Node composition root has a
-matching cleanup path. Startup failure runs the same cleanup before exiting nonzero.
+matching joined cleanup path before the process exits.
 
 ## Desktop coexistence and handoff
 
@@ -182,6 +221,10 @@ The intended follow-up is a coordinated handoff, not an attempt to turn the runn
 into Electron. Standalone-backend architectures keep the host process independent and let desktop
 clients attach to or supervise it. Orca can move toward that model while keeping browser panes
 desktop-local.
+
+The current npm profile lock is only a same-profile single-writer guard. It does not let desktop
+discover the npm host, transfer ownership, reuse its identity, or reconnect clients, and therefore
+must not be presented as desktop takeover support.
 
 A safe handoff requires:
 
@@ -228,13 +271,18 @@ the terminal marker.
 
 ## Rollout
 
-1. Publish the package under a release-candidate tag.
-2. Keep desktop `orca serve` as the documented stable path while collecting package telemetry and
-   install failures.
-3. Promote npm/npx to the primary headless documentation after the Linux matrix is green.
-4. Add service installation and readiness-based immutable updates.
-5. Add desktop-managed SSH bootstrap using the same package.
-6. Consider an opt-in browser sidecar only after the browserless server is stable.
+1. Publish an immutable candidate with an explicit non-default tag, for example
+   `npm publish --tag rc`; never let the first publication implicitly claim `latest`.
+2. Verify the registry dist-tags, install `@rc` on the supported package matrix, and retain the
+   exact version that passed.
+3. Keep desktop `orca serve` as the documented stable path while collecting candidate install
+   failures.
+4. Promote that exact version with `npm dist-tag add @stablyai/orca@<version> latest` only after
+   required gates pass. Ship UI and stable docs that recommend `@latest` no earlier than this step.
+5. Move `rc` to later candidates independently; rollback `latest` to a previously validated exact
+   version rather than republishing mutable bytes.
+6. Add service installation, readiness-based immutable updates, and desktop-managed SSH bootstrap.
+7. Consider an opt-in browser sidecar only after the browserless server is stable.
 
 ## Implementation checklist
 
@@ -245,18 +293,29 @@ the terminal marker.
 - [x] Add the Node process-environment facade.
 - [x] Keep the desktop composition root behavior unchanged.
 - [x] Prohibit Electron runtime dependencies in the server build.
+- [x] Keep executable dispatch in the package entry so importing server composition has no startup
+      side effect.
 
 ### Runtime
 
 - [x] Initialize persistent state in an isolated server data directory.
 - [x] Initialize or adopt the durable terminal daemon.
 - [x] Register the headless PTY controller.
+- [x] Wire Claude and Codex accounts, rate limits, subscriptions, and runtime-target settings sync.
+- [x] Load the durable agent-session claim signer from the server profile.
+- [x] Wire AgentHook lifecycle, snapshots, compatibility authority, PTY environment, and rate-limit
+      observations.
+- [x] Resolve account-aware Claude and Codex PTY launches.
+- [x] Wire orchestration transport plus prepare, refresh, and reconcile recovery.
+- [x] Dispatch scheduled and manual automations without a renderer.
+- [x] Wire artifact sharing, AI Vault Codex resume, and commit-message agent environments.
 - [x] Start local and WebSocket RPC transports.
 - [x] Serve the static web client.
 - [x] Publish readiness schema version 1.
 - [x] Generate runtime-scoped E2EE pairing offers.
 - [x] Omit browser capabilities and fail remote browser requests explicitly.
-- [x] Flush state and detach cleanly on signals and startup errors.
+- [x] Join RPC stop, composition drain, daemon disconnect, store flush, and lock release in order on
+      signals and startup errors.
 
 ### CLI and networking
 
@@ -275,6 +334,8 @@ the terminal marker.
 - [x] Install native dependencies for the Node ABI.
 - [x] Add tarball inventory, size, executable, license, and dependency gates.
 - [x] Verify the tarball contains no Electron runtime.
+- [ ] Publish the first immutable candidate under the non-default `rc` dist-tag.
+- [ ] Promote the exact matrix-validated candidate to `latest` before stable onboarding ships.
 
 ### Product onboarding
 
@@ -283,10 +344,14 @@ the terminal marker.
 - [x] Link the shorter npm-server documentation from the existing Linux guide.
 - [x] Capture visual proof for the UI change.
 
-### Desktop coexistence and handoff
+### Desktop coexistence
 
 - [x] Use separate npm and desktop profiles so both installations can run safely today.
+- [x] Fence one npm profile to one live writer without blocking different profiles.
 - [x] Document the ownership, identity, daemon, and rollback contract for a future handoff.
+
+### Future desktop handoff follow-up (not part of the initial release)
+
 - [ ] Add a cross-process profile lease with generation fencing.
 - [ ] Let desktop discover and authenticate to the local npm host.
 - [ ] Checkpoint and transfer ownership without two live profile writers.
@@ -304,7 +369,17 @@ the terminal marker.
 - [x] Test missing browser capabilities, explicit rejection, and no local fallback in remote RPCs.
 - [x] Run clean Docker tests on Ubuntu 20.04, 22.04, and 24.04 amd64 and 20.04 arm64.
 - [x] Verify the glibc 2.31 floor and Node native ABI.
-- [ ] Run a Windows package smoke test; macOS package verification passed locally.
+- [ ] Pass the installed-package runtime oracle on Windows Server 2022 x64; macOS arm64 passed
+      locally.
+- [x] Prove both installed bins route zero-argument, `serve`, help/version, and non-server control
+      commands exactly once without eagerly initializing the wrong runtime.
+- [ ] Record installed CLI startup/readiness timing and subprocess counts on the final package.
+
+### Accepted platform follow-ups
+
+- [ ] Run the installed-package runtime oracle inside WSL.
+- [ ] Run the installed-package runtime oracle on Windows arm64 hardware.
+- [ ] Add and validate nested SSH connection-manager lifecycle parity for the browserless host.
 
 ### Release readiness
 
@@ -313,19 +388,66 @@ the terminal marker.
 - [x] Audit security, package contents, scripts, and dependency changes.
 - [x] Audit persisted-state and mobile/old-client compatibility.
 - [x] Audit macOS, Linux, Windows, WSL, SSH, and path behavior; retain runtime gaps below.
+- [x] Re-run the final-head focused selector and workflow contract suite and record their actual
+      counts below.
 - [ ] Attach package/Docker evidence and UI visual proof to the PR.
 - [ ] Complete the PR description with validation commands and remaining platform gaps.
 
 ## Validation record and residual gaps
 
-The publishable tarball passed its inventory, executable, license, dependency, web-client, real
-E2EE, workspace, Git, PTY, shutdown, and restart-continuity oracle on macOS. Docker passed the same
-installed tarball and runtime oracle on Ubuntu 20.04, 22.04, and 24.04 amd64 plus Ubuntu 20.04
-arm64. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active native PTY against glibc
-2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
+The installed-tarball history covers its inventory, executable, license, dependency, web-client,
+real E2EE, workspace, Git, PTY, shutdown, and restart-continuity oracle on macOS; Ubuntu 20.04,
+22.04, and 24.04 amd64; and Ubuntu 20.04 arm64. The final package was rerun on macOS arm64 and
+Ubuntu 20.04 amd64. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active native PTY
+against glibc 2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
 
-Windows and WSL package smoke tests remain release-CI gaps. The code uses Node path/process APIs and
-the PTY dependency contains Windows x64 and arm64 prebuilds, but support should not be promoted
-without a real Windows install and PTY run. The PTY package also retains a deprecated transitive
-`prebuild-install` fallback; clean installs select the bundled prebuild before that downloader, but
-the dependency should be replaced when an equally portable maintained package is available.
+The current focused selector passed 521 tests across 21 server, RPC, cross-version wire, onboarding,
+browserless composition, automation, precheck, profile-lock, readiness, installed-process,
+AgentHook, and shutdown files. The two workflow contract files passed 17 tests:
+
+```bash
+pnpm exec vitest run --config config/vitest.config.ts \
+  config/scripts/node-server-installed-process-harness.test.ts \
+  config/scripts/node-server-verifier-host-path.test.ts \
+  src/cli/runtime-client-deferral.test.ts \
+  src/main/agent-hooks/server.test.ts \
+  src/main/automations/headless-work-drain.test.ts \
+  src/main/automations/precheck-runner.test.ts \
+  src/main/automations/service-precheck.test.ts \
+  src/main/automations/service.test.ts \
+  src/main/runtime/pairing-endpoint.test.ts \
+  src/main/runtime/runtime-rpc.test.ts \
+  src/node-server/browserless-automation-dispatcher.test.ts \
+  src/node-server/browserless-runtime-composition.test.ts \
+  src/node-server/server-address-discovery.test.ts \
+  src/node-server/server-cli-arguments.test.ts \
+  src/node-server/server-paths.test.ts \
+  src/node-server/server-profile-process-lock.test.ts \
+  src/node-server/server-websocket-readiness.test.ts \
+  src/node-server/server-window-graph.test.ts \
+  src/renderer/src/components/settings/RuntimeHostAccessForm.test.tsx \
+  src/renderer/src/components/sidebar/AddRemoteHostFields.test.tsx \
+  tests/e2e/cross-version-wire/cross-version-terminal-wire.unit.test.ts
+pnpm exec vitest run --config config/vitest.config.ts \
+  config/scripts/pr-workflow-parallelism.test.mjs \
+  config/scripts/node-server-package-workflow-contract.test.mjs
+```
+
+The final macOS arm64 installed-tarball oracle passed with 18,114,920 packed bytes and 55,066,712
+unpacked bytes. Ubuntu 20.04 amd64 passed the same installed runtime oracle in Docker, including the
+glibc 2.31 and `GLIBCXX_3.4.28` floors.
+
+As an overlapping final packaging subset, the installed-process harness passed 2 tests and the
+package-workflow contract passed 4 tests. These six tests are already included in the focused and
+workflow counts above rather than added to them.
+
+The required Windows Server 2022 x64 lane is pending on the current worktree, so Windows support is
+not yet claimed. Once that lane passes the full clean-install, E2EE, workspace, native PTY, restart,
+and cleanup journey, the explicit untested platform gaps remain WSL, Windows arm64, and nested SSH
+connection-manager parity in the browserless host. The PTY dependency contains Windows x64 and
+arm64 prebuilds, but a present binary is not runtime evidence for an untested target.
+
+The package remains unpublished: the registry currently has neither `rc` nor `latest`. The PTY
+package also retains a deprecated transitive `prebuild-install` fallback; clean installs select the
+bundled prebuild before that downloader, but the dependency should be replaced when an equally
+portable maintained package is available.

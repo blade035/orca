@@ -31,7 +31,7 @@ mkdirSync(distRoot, { recursive: true })
 
 const serverResult = await build({
   ...common,
-  entryPoints: [join(repoRoot, 'src', 'node-server', 'index.ts')],
+  entryPoints: [join(repoRoot, 'src', 'node-server', 'package-cli.ts')],
   outfile: join(distRoot, 'cli.js')
 })
 const daemonResult = await build({

@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 
 export function resolveServerDataPath(explicitPath?: string): string {
   if (explicitPath) {
@@ -15,7 +15,11 @@ export function resolveServerDataPath(explicitPath?: string): string {
   if (process.platform === 'darwin') {
     return join(homedir(), 'Library', 'Application Support', 'Orca Server')
   }
-  return join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'orca')
+  return join(resolveLinuxStateHome(process.env.XDG_STATE_HOME, homedir()), 'orca')
+}
+
+export function resolveLinuxStateHome(xdgStateHome: string | undefined, homePath: string): string {
+  return xdgStateHome && isAbsolute(xdgStateHome) ? xdgStateHome : join(homePath, '.local', 'state')
 }
 
 export function ensureServerDataPath(path: string): void {

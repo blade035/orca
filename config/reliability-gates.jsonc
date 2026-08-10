@@ -11,6 +11,86 @@
   },
   "gates": [
     {
+      "id": "automation.headless-precheck-shutdown",
+      "title": "Headless shutdown cancels local and SSH automation prechecks",
+      "maturity": "experimental",
+      "protection": "partial",
+      "owner": "automations",
+      "layer": "main-process-lifecycle",
+      "surfaces": [
+        "scheduled headless automation prechecks",
+        "local precheck process trees",
+        "SSH precheck channel acquisition and execution"
+      ],
+      "platforms": ["macos", "linux", "windows"],
+      "providers": ["local", "ssh", "paired-runtime-host"],
+      "coveredPlatforms": ["macos"],
+      "coveredProviders": ["local", "ssh", "paired-runtime-host"],
+      "coverageNotes": "A real local child process and injected SSH acquisition/channel barriers cover cancellation, late fulfillment and rejection, process death, channel close, listener cleanup, and service drain. Physical Windows taskkill and live SSH transport remain uncollected.",
+      "motivatingLinks": ["https://github.com/stablyai/orca/pull/13452"],
+      "invariant": "Stopping a headless automation service must abort any scheduled precheck, terminate its local process tree or close its SSH channel, consume late SSH acquisition settlement, and drain without waiting for the configured precheck timeout or leaving an unobserved error event.",
+      "oracle": "Hold local execution, SSH channel execution, and SSH channel acquisition at deterministic barriers; abort the shared headless stop signal; require a cancelled result, local child death, acquired and late-acquired channel close, consumed late rejection, safe late channel and stderr errors, listener cleanup on close, no dispatcher call, and a settled service drain.",
+      "commands": [
+        "pnpm exec vitest run --config config/vitest.config.ts src/main/automations/precheck-runner.test.ts src/main/automations/service-precheck.test.ts"
+      ],
+      "testFiles": [
+        "src/main/automations/precheck-runner.test.ts",
+        "src/main/automations/service-precheck.test.ts"
+      ],
+      "assertionRefs": [
+        {
+          "file": "src/main/automations/precheck-runner.test.ts",
+          "assertions": [
+            "aborts a local precheck process tree and settles promptly",
+            "closes an acquired SSH channel and settles when aborted",
+            "bounds SSH channel acquisition and closes a channel that resolves after abort",
+            "consumes an SSH channel acquisition rejection after abort"
+          ]
+        },
+        {
+          "file": "src/main/automations/service-precheck.test.ts",
+          "assertions": ["cancels and drains a scheduled headless precheck during shutdown"]
+        }
+      ],
+      "evidenceRuns": [
+        {
+          "date": "2026-08-10",
+          "runner": "local",
+          "platform": "macos",
+          "result": "passed",
+          "command": "pnpm exec vitest run --config config/vitest.config.ts src/main/automations/precheck-runner.test.ts src/main/automations/service-precheck.test.ts",
+          "durationSeconds": 5,
+          "summary": "Two deterministic files passed 12 precheck and service lifecycle tests; the broader four-file automation lifecycle selector passed 27 tests."
+        }
+      ],
+      "runtimeBudget": {
+        "p95Seconds": 8,
+        "scope": "focused main-process precheck and service lifecycle contracts"
+      },
+      "flakeHistory": {
+        "status": "not-started",
+        "evidence": "New deterministic barriers and a real local child process; CI and soak history have not started."
+      },
+      "redGreenEvidence": {
+        "status": "complete",
+        "evidence": "Before signal propagation, local and SSH cancellation tests waited for process or channel timeouts and the service drain could not settle. The candidate passes all cancellation, late-settlement, process-death, channel-close, and listener-cleanup assertions."
+      },
+      "performanceBudget": {
+        "required": true,
+        "evidence": "Cancellation performs one process-tree termination or channel close, retains no recurring poll, removes abort and data listeners on settlement, and consumes late SSH promise settlement without retry or fanout."
+      },
+      "promotionCriteria": [
+        "Collect 100 consecutive focused CI passes or 14 days of soak history.",
+        "Collect physical Windows taskkill and live Linux or Windows SSH cancellation evidence.",
+        "Keep process death, channel close, late settlement, listener cleanup, and service drain assertions green."
+      ],
+      "knownGaps": [
+        "Physical Windows process-tree cancellation is statically implemented but not exercised locally.",
+        "SSH behavior uses injected channels rather than a live remote transport."
+      ],
+      "demotionRule": "Demote if shutdown can wait for the precheck timeout, leave a child or channel live, leak listeners, surface an unhandled late error or rejection, or dispatch after cancellation."
+    },
+    {
       "id": "editor.restored-sibling-owner-reparent",
       "title": "Restored sibling tabs migrate filesystem authority before becoming editable",
       "maturity": "experimental",

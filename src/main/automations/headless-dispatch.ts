@@ -24,6 +24,7 @@ export type HeadlessAutomationDispatcher = (request: {
   automation: Automation
   run: AutomationRun
   target: Extract<AutomationRunTargetResult, { ok: true }>
+  signal?: AbortSignal
 }) => Promise<HeadlessAutomationDispatchLaunch>
 
 export function createHeadlessAutomationOutputSnapshotBuffer(): {

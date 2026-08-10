@@ -3,11 +3,16 @@ import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { removeHostTree } from '../../src/main/host-tree-removal'
-import { normalizeRuntimePathForComparison } from '../../src/shared/cross-platform-path'
 import { decodePairingOffer, type PairingOffer } from '../../src/shared/pairing'
 import { sendRemoteRuntimeRequest } from '../../src/shared/remote-runtime-client'
 import type { RuntimeStatus, RuntimeTerminalRead } from '../../src/shared/runtime-types'
+import { verifyInstalledCliProfileBehavior } from './node-server-installed-cli-oracle'
+import {
+  isExpectedInstalledServerStopResult,
+  waitForInstalledServerExit
+} from './node-server-installed-process-harness'
 import { stopNodeServerVerifierDaemons } from './node-server-verifier-daemon-cleanup'
+import { isSameExistingHostPath } from './node-server-verifier-host-path'
 
 type ReadyPayload = {
   type: 'orca_server_ready'
@@ -23,6 +28,7 @@ type ReadyPayload = {
 
 type RunningServer = { child: ChildProcess; ready: ReadyPayload; stderr: string[] }
 const cliPath = resolve(readArgument('--cli') ?? 'resources/npm-server/dist/cli.js')
+const expectedVersion = readArgument('--expected-version') ?? packageVersionFromEnvironment()
 const shortTemporaryRoot = process.platform === 'win32' ? tmpdir() : '/tmp'
 const ownedRoot = realpathSync(mkdtempSync(join(shortTemporaryRoot, 'orca-nsv-')))
 const dataPath = join(ownedRoot, 'state')
@@ -42,10 +48,19 @@ async function main(): Promise<void> {
     activeServer = first
     const pairing = decodePairingOffer(first.ready.pairing.url)
     await verifyWebClient(first.ready.pairing.webClientUrl)
-    await verifyStatus(pairing, first.ready.runtimeId)
+    await verifyStatus(pairing, first.ready.runtimeId, expectedVersion)
     await verifyBrowserUnavailable(pairing)
     await verifyGitWorkspace(pairing)
     const terminal = await verifyFolderWorkspaceAndTerminal(pairing)
+    await verifyInstalledCliProfileBehavior({
+      cliPath,
+      dataPath,
+      expectedRuntimeId: first.ready.runtimeId,
+      expectedVersion,
+      pairingUrl: first.ready.pairing.url,
+      terminalHandle: terminal.handle,
+      temporaryRoot: ownedRoot
+    })
     await stopServer(first)
     activeServer = null
 
@@ -56,7 +71,7 @@ async function main(): Promise<void> {
       'runtime process identity did not rotate'
     )
     const reconnectedPairing = { ...pairing, endpoint: second.ready.boundEndpoint }
-    await verifyStatus(reconnectedPairing, second.ready.runtimeId)
+    await verifyStatus(reconnectedPairing, second.ready.runtimeId, expectedVersion)
     const restored = await call<{ terminals: { handle: string; ptyId?: string }[] }>(
       reconnectedPairing,
       'terminal.list',
@@ -70,7 +85,7 @@ async function main(): Promise<void> {
     activeServer = null
     process.stdout.write('Node server runtime verification passed\n')
   } finally {
-    if (activeServer?.child.exitCode === null) {
+    if (activeServer?.child.exitCode === null && activeServer.child.signalCode === null) {
       await stopServer(activeServer).catch(() => activeServer?.child.kill('SIGKILL'))
     }
     await stopNodeServerVerifierDaemons(dataPath)
@@ -88,6 +103,10 @@ void main().catch((error) => {
 function readArgument(flag: string): string | undefined {
   const index = process.argv.indexOf(flag)
   return index === -1 ? undefined : process.argv[index + 1]
+}
+
+function packageVersionFromEnvironment(): string {
+  return process.env.npm_package_version ?? '0.0.0-dev'
 }
 
 function startServer(): Promise<RunningServer> {
@@ -139,7 +158,7 @@ function startServer(): Promise<RunningServer> {
 
     function fail(error: unknown): void {
       clearTimeout(timeout)
-      if (child.exitCode === null) {
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGTERM')
       }
       rejectStart(error)
@@ -149,31 +168,18 @@ function startServer(): Promise<RunningServer> {
 
 async function stopServer(server: RunningServer): Promise<void> {
   const { child } = server
-  if (child.exitCode !== null) {
-    throw new Error(`server exited unexpectedly (${child.exitCode})`)
+  if (child.exitCode !== null || child.signalCode !== null) {
+    throw new Error(`server exited unexpectedly (${child.exitCode ?? child.signalCode})`)
   }
-  child.kill('SIGTERM')
-  const result = await waitForServerExit(child)
-  if (result.code !== 0) {
+  if (!child.kill('SIGTERM')) {
+    throw new Error('server rejected the shutdown signal')
+  }
+  const result = await waitForInstalledServerExit(child)
+  if (!isExpectedInstalledServerStopResult(result, process.platform)) {
     throw new Error(
       `server shutdown failed (${result.code ?? result.signal}): ${server.stderr.join('')}`
     )
   }
-}
-
-function waitForServerExit(
-  child: ChildProcess
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  return new Promise((resolveExit, rejectExit) => {
-    const timeout = setTimeout(
-      () => rejectExit(new Error('server did not exit after SIGTERM')),
-      10_000
-    )
-    child.once('exit', (code, signal) => {
-      clearTimeout(timeout)
-      resolveExit({ code, signal })
-    })
-  })
 }
 
 async function verifyWebClient(url: string): Promise<void> {
@@ -182,9 +188,14 @@ async function verifyWebClient(url: string): Promise<void> {
   assert((await response.text()).includes('<!doctype html>'), 'web client HTML was not served')
 }
 
-async function verifyStatus(pairing: PairingOffer, expectedRuntimeId: string): Promise<void> {
+async function verifyStatus(
+  pairing: PairingOffer,
+  expectedRuntimeId: string,
+  expectedAppVersion: string
+): Promise<void> {
   const status = await call<RuntimeStatus>(pairing, 'status.get')
   assert(status.runtimeId === expectedRuntimeId, 'status returned the wrong runtime')
+  assert(status.appVersion === expectedAppVersion, 'status returned the wrong package version')
   assert(status.desktopWindowStatus === 'blocked', 'desktop status is not blocked')
   const capabilities = status.capabilities ?? []
   for (const capability of [
@@ -225,17 +236,6 @@ async function verifyGitWorkspace(pairing: PairingOffer): Promise<void> {
   )
 }
 
-function isSameExistingHostPath(left: string, right: string): boolean {
-  try {
-    return (
-      normalizeRuntimePathForComparison(realpathSync.native(left)) ===
-      normalizeRuntimePathForComparison(realpathSync.native(right))
-    )
-  } catch {
-    return false
-  }
-}
-
 async function verifyFolderWorkspaceAndTerminal(pairing: PairingOffer): Promise<{
   handle: string
   marker: string
@@ -257,12 +257,16 @@ async function verifyFolderWorkspaceAndTerminal(pairing: PairingOffer): Promise<
   const created = await call<{ terminal: { handle: string; ptyId?: string } }>(
     pairing,
     'terminal.create',
-    { worktree: workspaceSelector, command: `printf '${marker}\\n'` }
+    {
+      worktree: workspaceSelector,
+      command: `node -p "'${marker}:'+process.env.TERM_PROGRAM_VERSION"`
+    }
   )
-  await waitForTerminalMarker(pairing, created.terminal.handle, marker)
+  const versionedMarker = `${marker}:${expectedVersion}`
+  await waitForTerminalMarker(pairing, created.terminal.handle, versionedMarker)
   return {
     handle: created.terminal.handle,
-    marker,
+    marker: versionedMarker,
     ptyId: created.terminal.ptyId,
     workspaceSelector
   }

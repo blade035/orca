@@ -3,6 +3,7 @@
   "include": [
     "../electron.vite.config.*",
     "./build-plugins/**/*",
+    "../src/cli/**/*",
     "../src/main/**/*",
     "../src/node-server/**/*",
     "../src/renderer/src/lib/skill-freshness-display-status.ts",

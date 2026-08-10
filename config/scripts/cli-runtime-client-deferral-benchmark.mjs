@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Benchmark: CLI process startup with the RuntimeClient module graph deferred.
 //
-// src/cli/index.ts used to value-import RuntimeClient at module scope, and five
+// The CLI program used to value-import RuntimeClient at module scope, and five
 // modules that load on every invocation (args, flags, dispatch, format,
 // selectors) pulled RuntimeClientError from the ./runtime-client barrel. Either
 // edge alone drags in the whole client graph: zod (via shared/pairing ->
@@ -59,9 +59,9 @@ const TOUCHED = [
 // comment that merely names the function cannot satisfy the check.
 function assertMarkersFresh() {
   const checks = [
-    ['src/cli/index.ts', "await import('./runtime-client.js')"],
-    ['src/cli/index.ts', 'await loadRuntimeClientClass()'],
-    ['src/cli/index.ts', "import type { RuntimeClient } from './runtime-client'"],
+    ['src/cli/cli-program.ts', "await import('./runtime-client.js')"],
+    ['src/cli/cli-program.ts', 'await loadRuntimeClientClass()'],
+    ['src/cli/cli-program.ts', "import type { RuntimeClient } from './runtime-client'"],
     ['src/cli/runtime/client.ts', "await import('./websocket-transport.js')"],
     ['src/cli/runtime/client.ts', 'await loadSendWebSocketRequest()'],
     ['src/cli/args.ts', "import { RuntimeClientError } from './runtime/types'"],

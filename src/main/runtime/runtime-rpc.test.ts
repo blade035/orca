@@ -5661,6 +5661,26 @@ describe('OrcaRuntimeRpcServer WebSocket bind host (STA-2370)', () => {
     }
   })
 
+  it('publishes a valid endpoint when the standalone host binds IPv6 loopback', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
+    const server = new OrcaRuntimeRpcServer({
+      runtime: new OrcaRuntimeService(),
+      userDataPath,
+      enableWebSocket: true,
+      wsPort: 0,
+      wsBindHost: '::1'
+    })
+
+    await server.start()
+    try {
+      expect(wsTransportOf(server)?.resolvedHost).toBe('::1')
+      expect(server.getWebSocketEndpoint()).toMatch(/^ws:\/\/\[::1\]:\d+$/)
+      expect(new URL(server.getWebSocketEndpoint()!).hostname).toBe('[::1]')
+    } finally {
+      await server.stop()
+    }
+  })
+
   it('binds all interfaces at startup when a previously-connected device can reconnect', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'orca-runtime-rpc-'))
     // Why: a device that has actually connected (lastSeenAt > 0) may reconnect, so the listener must be

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ensureServerDataPath, resolveServerDataPath } from './server-paths'
+import { ensureServerDataPath, resolveLinuxStateHome, resolveServerDataPath } from './server-paths'
 
 const originalDataDirectory = process.env.ORCA_SERVER_DATA_DIR
 const createdPaths: string[] = []
@@ -27,6 +27,11 @@ describe('server data paths', () => {
   it('uses the server environment path when no flag is supplied', () => {
     process.env.ORCA_SERVER_DATA_DIR = './environment-state'
     expect(resolveServerDataPath()).toBe(resolve('./environment-state'))
+  })
+
+  it('ignores a relative XDG state directory', () => {
+    expect(resolveLinuxStateHome('relative-state', '/home/ada')).toBe('/home/ada/.local/state')
+    expect(resolveLinuxStateHome('/var/lib/ada', '/home/ada')).toBe('/var/lib/ada')
   })
 
   it('creates an owner-only state directory on POSIX', () => {

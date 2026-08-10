@@ -2200,9 +2200,29 @@ export class AgentHookServer {
   }
 
   stop(): void {
+    this.resetForStop()?.close()
+  }
+
+  async stopAndWait(): Promise<void> {
+    const server = this.resetForStop()
+    if (!server) {
+      return
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error)
+        } else {
+          resolve()
+        }
+      })
+    })
+  }
+
+  private resetForStop(): ReturnType<typeof createServer> | null {
     // Why: flush the pending debounced write before clearing the map, else a hook <250ms before quit is lost on relaunch.
     this.flushStatusPersistSync()
-    this.server?.close()
+    const server = this.server
     this.server = null
     this.port = 0
     this.token = ''
@@ -2236,6 +2256,7 @@ export class AgentHookServer {
     this.legacyPaneKeyAliases.clear()
     clearAllListenerCaches(this.state)
     this.notifyStatusChangeListeners()
+    return server
   }
 
   /** Drop only the status row (user dismissal); do NOT wipe prompt/tool caches since the pane's agent may still be alive. Use clearPaneState for PTY-teardown. */

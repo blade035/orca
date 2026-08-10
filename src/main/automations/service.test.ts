@@ -412,6 +412,51 @@ describe('AutomationService', () => {
     }
   })
 
+  it('drains a headless completion before shutdown returns', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Drain completion',
+      prompt: 'Finish before shutdown',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: Date.now() + 60_000
+    })
+    let finish!: (result: { status: 'completed'; outputSnapshot: null; error: null }) => void
+    const completion = new Promise<{
+      status: 'completed'
+      outputSnapshot: null
+      error: null
+    }>((resolve) => {
+      finish = resolve
+    })
+    let dispatchSignal: AbortSignal | undefined
+    const service = new AutomationService(store, {
+      allowRemoteHostScheduling: true,
+      headlessDispatcher: vi.fn().mockImplementation(async ({ signal }) => {
+        dispatchSignal = signal
+        return { workspaceId: 'wt1', terminalSessionId: 'tab-1', completion }
+      })
+    })
+
+    await service.runNow(automation.id)
+    let drained = false
+    const drain = service.stopAndDrain().then(() => {
+      drained = true
+    })
+    await Promise.resolve()
+    expect(drained).toBe(false)
+    expect(dispatchSignal?.aborted).toBe(true)
+
+    finish({ status: 'completed', outputSnapshot: null, error: null })
+    await drain
+    expect(store.listAutomationRuns(automation.id)[0]?.status).toBe('completed')
+  })
+
   it('attaches provider usage when a completed run can be attributed', async () => {
     vi.setSystemTime(new Date('2026-05-13T10:00:00'))
     const store = await createStore()
