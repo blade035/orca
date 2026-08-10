@@ -31,7 +31,8 @@ export function createBrowserlessAutomationDispatcher(
           runtime.createManagedWorktree(
             buildHeadlessAutomationWorktreeCreateArgs({ automation, run, repo: target.repo })
           ),
-        signal
+        signal,
+        'join'
       )
       terminalHandle = created.startupTerminal?.handle ?? ''
       terminalSessionId = created.startupTerminal?.tabId ?? null
@@ -142,7 +143,8 @@ function shutdownCompletion(): {
 
 async function awaitRuntimeOperation<T>(
   operation: () => Promise<T>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  shutdownSettlement: 'grace' | 'join' = 'grace'
 ): Promise<T> {
   if (signal?.aborted) {
     throw new Error(SHUTDOWN_ERROR)
@@ -171,9 +173,11 @@ async function awaitRuntimeOperation<T>(
     return unwrapRuntimeOperationSettlement(first)
   }
 
-  // Why: some runtime operations have no cancellation contract. Observe their
-  // eventual outcome, but bound shutdown and never continue after the abort.
-  await waitForRuntimeOperationShutdownGrace(settlement)
+  // Why: read-only runtime operations may lack cancellation; observe their
+  // outcome without letting them block shutdown indefinitely.
+  await (shutdownSettlement === 'join'
+    ? settlement
+    : waitForRuntimeOperationShutdownGrace(settlement))
   throw new Error(SHUTDOWN_ERROR)
 }
 

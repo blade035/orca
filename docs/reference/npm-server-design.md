@@ -202,10 +202,11 @@ considered only after the server build and native dependency matrix pass there.
 
 ## Shutdown and persistence
 
-SIGINT, SIGTERM, and startup failure join one sequential teardown: stop RPC listeners; cancel local
-or SSH prechecks, abort and drain headless automations, and wait for AgentHook shutdown through the
-composition root; disconnect from the terminal daemon; flush the store; then release the profile
-lock. A failed step is recorded while later steps still run. A normal server shutdown does not kill
+SIGINT and SIGTERM synchronously cancel startup before joining its current phase. Teardown then
+stops RPC listeners; cancels local or SSH prechecks, aborts and drains headless automations, and
+waits for AgentHook shutdown through the composition root; disconnects from the terminal daemon;
+flushes the store; and releases the profile lock. Startup failures join the same coordinator. A
+failed step is recorded while later steps still run. A normal server shutdown does not kill
 daemon-owned terminals. Startup reconnects to the same daemon and device identity.
 
 Every listener, socket, timer, and signal handler installed by the Node composition root has a
@@ -316,6 +317,8 @@ the terminal marker.
 - [x] Omit browser capabilities and fail remote browser requests explicitly.
 - [x] Join RPC stop, composition drain, daemon disconnect, store flush, and lock release in order on
       signals and startup errors.
+- [x] Cancel startup before signal teardown and prove pre-readiness SIGTERM prints no credential,
+      exits cleanly, and leaves the profile reusable.
 
 ### CLI and networking
 
@@ -397,46 +400,60 @@ the terminal marker.
 
 The installed-tarball history covers its inventory, executable, license, dependency, web-client,
 real E2EE, workspace, Git, PTY, shutdown, and restart-continuity oracle on macOS; Ubuntu 20.04,
-22.04, and 24.04 amd64; and Ubuntu 20.04 arm64. The final package was rerun on macOS arm64 and
-Ubuntu 20.04 amd64. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active native PTY
-against glibc 2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
+22.04, and 24.04 amd64; and Ubuntu 20.04 arm64. The final package was rerun on macOS arm64 and all
+three amd64 Ubuntu versions. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active
+native PTY against glibc 2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
 
-The current focused selector passed 525 tests across 22 server, RPC, cross-version wire, onboarding,
-browserless composition, automation, precheck, profile-lock, readiness, installed-process,
-AgentHook, and shutdown files. The two workflow contract files passed 17 tests:
+The current focused selector passed 552 tests across 31 server, RPC, cross-version wire,
+onboarding, browserless composition, automation, precheck, profile-lock, readiness,
+installed-process, AgentHook, and shutdown files. Four workflow and release-contract files passed
+62 tests with one platform-specific skip:
 
 ```bash
 pnpm exec vitest run --config config/vitest.config.ts \
   config/scripts/node-server-installed-process-harness.test.ts \
+  config/scripts/node-server-verifier-daemon-cleanup.test.ts \
   config/scripts/node-server-verifier-git-fixture.test.ts \
   config/scripts/node-server-verifier-host-path.test.ts \
   src/cli/runtime-client-deferral.test.ts \
   src/main/agent-hooks/server.test.ts \
+  src/main/automations/headless-completion-settlement.test.ts \
   src/main/automations/headless-work-drain.test.ts \
   src/main/automations/precheck-runner.test.ts \
   src/main/automations/service-precheck.test.ts \
   src/main/automations/service.test.ts \
   src/main/runtime/pairing-endpoint.test.ts \
   src/main/runtime/runtime-rpc.test.ts \
+  src/main/server/serve-readiness.test.ts \
   src/node-server/browserless-automation-dispatcher.test.ts \
   src/node-server/browserless-runtime-composition.test.ts \
+  src/node-server/package-cli-deferral.test.ts \
   src/node-server/server-address-discovery.test.ts \
+  src/node-server/server-bind-host.test.ts \
   src/node-server/server-cli-arguments.test.ts \
   src/node-server/server-paths.test.ts \
+  src/node-server/server-profile-environment.test.ts \
   src/node-server/server-profile-process-lock.test.ts \
+  src/node-server/server-shutdown-coordinator.test.ts \
+  src/node-server/server-signal-shutdown.test.ts \
   src/node-server/server-websocket-readiness.test.ts \
   src/node-server/server-window-graph.test.ts \
+  src/renderer/src/components/settings/NodeServerSetupCallout.test.tsx \
   src/renderer/src/components/settings/RuntimeHostAccessForm.test.tsx \
   src/renderer/src/components/sidebar/AddRemoteHostFields.test.tsx \
   tests/e2e/cross-version-wire/cross-version-terminal-wire.unit.test.ts
 pnpm exec vitest run --config config/vitest.config.ts \
   config/scripts/pr-workflow-parallelism.test.mjs \
-  config/scripts/node-server-package-workflow-contract.test.mjs
+  config/scripts/node-server-package-workflow-contract.test.mjs \
+  config/scripts/generate-skill-bundle-manifest.test.mjs \
+  config/scripts/package-electron-runtime-contract.test.mjs
 ```
 
-The final macOS arm64 installed-tarball oracle passed with 18,114,920 packed bytes and 55,066,757
-unpacked bytes. Ubuntu 20.04, 22.04, and 24.04 amd64 passed the same installed runtime oracle in
-Docker; Ubuntu 20.04 also verified the glibc 2.31 and `GLIBCXX_3.4.28` floors.
+The final macOS arm64 installed-tarball oracle passed with 18,203,728 packed bytes and 55,879,495
+unpacked bytes. Its POSIX startup oracle also sent SIGTERM before readiness, observed no credential
+output, and restarted the same profile successfully. Ubuntu 20.04, 22.04, and 24.04 amd64 passed
+the same installed runtime oracle in Docker; Ubuntu 20.04 also verified the glibc 2.31 and
+`GLIBCXX_3.4.28` floors.
 
 Ten fresh-profile installed-package trials on macOS arm64 reached the first schema-v1 readiness
 line in 352.705–748.323 ms, with a 369.474 ms median. Recursive process snapshots at one and three

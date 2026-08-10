@@ -123,48 +123,43 @@ describe('browserless automation dispatcher', () => {
     expect(runtime.waitForTerminal).not.toHaveBeenCalled()
   })
 
-  it('consumes a late worktree-create rejection without continuing dispatch', async () => {
-    vi.useFakeTimers()
-    try {
-      let rejectCreate!: (error: Error) => void
-      const create = new Promise<never>((_resolve, reject) => {
-        rejectCreate = reject
-      })
-      const runtime = {
-        createManagedWorktree: vi.fn(() => create),
-        launchAgentTerminal: vi.fn(),
-        showManagedWorktree: vi.fn(),
-        waitForTerminal: vi.fn(),
-        readTerminal: vi.fn()
-      } as unknown as OrcaRuntimeService
-      const controller = new AbortController()
-      const dispatch = createBrowserlessAutomationDispatcher(runtime)
-      const launched = dispatch({
-        automation: {
-          workspaceMode: 'new_per_run',
-          agentId: 'claude',
-          prompt: 'Run checks'
-        },
-        run: { id: 'run-1', title: 'Checks', scheduledFor: Date.now() },
-        target: { repo: { id: 'repo-1' } },
-        signal: controller.signal
-      } as never)
-      expect(runtime.createManagedWorktree).toHaveBeenCalledTimes(1)
-      const rejection = expect(launched).rejects.toThrow(
-        'Automation stopped during server shutdown.'
-      )
+  it('joins an in-flight worktree creation before shutdown settles', async () => {
+    let rejectCreate!: (error: Error) => void
+    const create = new Promise<never>((_resolve, reject) => {
+      rejectCreate = reject
+    })
+    const runtime = {
+      createManagedWorktree: vi.fn(() => create),
+      launchAgentTerminal: vi.fn(),
+      showManagedWorktree: vi.fn(),
+      waitForTerminal: vi.fn(),
+      readTerminal: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const controller = new AbortController()
+    const dispatch = createBrowserlessAutomationDispatcher(runtime)
+    let settled = false
+    const launched = dispatch({
+      automation: {
+        workspaceMode: 'new_per_run',
+        agentId: 'claude',
+        prompt: 'Run checks'
+      },
+      run: { id: 'run-1', title: 'Checks', scheduledFor: Date.now() },
+      target: { repo: { id: 'repo-1' } },
+      signal: controller.signal
+    } as never).finally(() => {
+      settled = true
+    })
+    expect(runtime.createManagedWorktree).toHaveBeenCalledTimes(1)
 
-      controller.abort()
-      await vi.runAllTimersAsync()
-      await rejection
+    controller.abort()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(settled).toBe(false)
 
-      rejectCreate(new Error('late create failure'))
-      await Promise.resolve()
-      expect(runtime.launchAgentTerminal).not.toHaveBeenCalled()
-      expect(runtime.waitForTerminal).not.toHaveBeenCalled()
-    } finally {
-      vi.useRealTimers()
-    }
+    rejectCreate(new Error('late create failure'))
+    await expect(launched).rejects.toThrow('Automation stopped during server shutdown.')
+    expect(runtime.launchAgentTerminal).not.toHaveBeenCalled()
+    expect(runtime.waitForTerminal).not.toHaveBeenCalled()
   })
 
   it('bounds shutdown while resolving the launched workspace display', async () => {

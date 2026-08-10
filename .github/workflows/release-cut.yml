@@ -716,6 +716,7 @@ jobs:
           # message and tag name explicitly (avoids npm's `v1.2.3` prefix
           # assumptions and any lifecycle scripts that would run on bump).
           npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm --prefix resources/npm-server version "$VERSION" --no-git-tag-version --allow-same-version
           # Why: the cut is the only point where committed skill bytes become a
           # released revision. Without this row the ledger never advances, so the
           # next skill change rebuilds the revision this tag ships over different
@@ -728,7 +729,7 @@ jobs:
             echo "::error::Refusing to record release provenance for v$VERSION: the committed skill artifacts do not match this ref. Land a regeneration on main, then re-run the cut." >&2
             exit 1
           fi
-          git add package.json resources/skills/release-mapping.json
+          git add package.json resources/npm-server/package.json resources/skills/release-mapping.json
           commit_message="release: v$VERSION"
           if [[ "$EVENT_NAME" == "schedule" ]]; then
             commit_message="$commit_message [rc-slot:$SLOT]"
@@ -752,9 +753,9 @@ jobs:
           # -m --first-parent: plain diff-tree prints NOTHING for a merge commit,
           # which would make this guard pass silently rather than fail closed.
           committed="$(git diff-tree --no-commit-id --name-only -r -m --first-parent HEAD |
-            grep -vxF -e 'package.json' -e 'resources/skills/release-mapping.json' || true)"
+            grep -vxF -e 'package.json' -e 'resources/npm-server/package.json' -e 'resources/skills/release-mapping.json' || true)"
           if [[ -n "$committed" ]]; then
-            echo "::error::Release commit carries unexpected paths: $(echo "$committed" | tr '\n' ' ')Only package.json and the skill release-mapping row may ship in a version commit." >&2
+            echo "::error::Release commit carries unexpected paths: $(echo "$committed" | tr '\n' ' ')Only package manifests and the skill release-mapping row may ship in a version commit." >&2
             exit 1
           fi
           git tag -a "v$VERSION" -m "v$VERSION"

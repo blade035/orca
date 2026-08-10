@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as managedHookLockClaims from '../main/agent-hooks/managed-hook-lock-claims'
+import { isManagedHookLockOwnerActive } from '../main/agent-hooks/managed-hook-lock-records'
 import {
   readManagedHookHostIdentity,
   readManagedHookProcessIdentity
@@ -300,12 +301,17 @@ describe('server profile process lock', () => {
   it('retries release after a transient removal failure', async () => {
     const root = await createRoot()
     const lock = await acquireServerProfileProcessLock(root)
+    const owner = JSON.parse(await readFile(paths(root).lock, 'utf8')) as { token: string }
+    const removeManagedHookLock = managedHookLockClaims.removeManagedHookLock
     const removeLock = vi.spyOn(managedHookLockClaims, 'removeManagedHookLock')
-    removeLock.mockResolvedValueOnce('unverifiable')
+    removeLock.mockResolvedValueOnce('unverifiable').mockImplementationOnce(async (...args) => {
+      expect(isManagedHookLockOwnerActive(owner.token)).toBe(true)
+      return removeManagedHookLock(...args)
+    })
 
-    await expect(lock.release()).rejects.toMatchObject({ reason: 'release_failed' })
     await expect(lock.release()).resolves.toBeUndefined()
     expect(removeLock).toHaveBeenCalledTimes(2)
+    expect(isManagedHookLockOwnerActive(owner.token)).toBe(false)
   })
 
   it('surfaces a typed error when the current process cannot be identified', async () => {

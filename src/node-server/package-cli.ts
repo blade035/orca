@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-import { main as runControlCli } from '../cli/cli-program'
-import { reportNodeServerFailure, runNodeServer } from './index'
-import { resolveServerDataPath } from './server-paths'
+export {}
 
 const argv = process.argv.slice(2)
 const serverCommand =
@@ -12,8 +10,14 @@ const serverCommand =
   argv[0] === '-v'
 
 if (serverCommand) {
-  void runNodeServer(argv).catch(reportNodeServerFailure)
+  void import('./index').then(({ reportNodeServerFailure, runNodeServer }) =>
+    runNodeServer(argv).catch(reportNodeServerFailure)
+  )
 } else {
-  process.env.ORCA_USER_DATA_PATH ??= resolveServerDataPath()
-  void runControlCli(argv)
+  void Promise.all([import('../cli/cli-program'), import('./server-profile-environment')]).then(
+    ([{ main: runControlCli }, { configureServerControlProfileEnvironment }]) => {
+      configureServerControlProfileEnvironment()
+      return runControlCli(argv)
+    }
+  )
 }

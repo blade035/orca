@@ -22,6 +22,16 @@ const ready: ServeReadiness = {
 }
 
 describe('ServeReadinessPublisher', () => {
+  it('does not publish readiness after startup cancellation', async () => {
+    const write = vi.fn(async () => {})
+    const publisher = new ServeReadinessPublisher(write)
+
+    await expect(
+      publisher.publish(ready, { mode: 'human' }, AbortSignal.abort())
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(write).not.toHaveBeenCalled()
+  })
+
   it('writes one complete human-readable ready block', async () => {
     const write = vi.fn(async () => {})
     const publisher = new ServeReadinessPublisher(write)

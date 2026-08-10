@@ -565,13 +565,13 @@ describe('skill bundle manifest generator', () => {
     const bumpStep = runSteps.find((step) => step.name === 'Bump package.json and tag')
 
     // The load-bearing check: whatever staged it and however the commit was
-    // spelled, only these two paths may ship. Asserted on the commit rather than
+    // spelled, only these paths may ship. Asserted on the commit rather than
     // the index because `git commit -a/-i/--only/<pathspec>` bypasses the index.
     // -F is part of the contract; without it `.` admits a path like packageXjson.
     // Flags pinned, not just the command: a `--diff-filter` slipped in here would
     // silence modifications, and dropping -m makes a merge commit report nothing.
     expect(bumpStep.run).toMatch(
-      /git diff-tree --no-commit-id --name-only -r -m --first-parent HEAD\s*\|\s*grep -vxF -e 'package\.json' -e 'resources\/skills\/release-mapping\.json'/
+      /git diff-tree --no-commit-id --name-only -r -m --first-parent HEAD\s*\|\s*grep -vxF -e 'package\.json' -e 'resources\/npm-server\/package\.json' -e 'resources\/skills\/release-mapping\.json'/
     )
     expect(bumpStep.run.indexOf('grep -vxF')).toBeLessThan(bumpStep.run.indexOf('git tag'))
     // ...and that it aborts. A guard degraded to a warning still reads as covered.

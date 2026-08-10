@@ -328,7 +328,7 @@ describe('Electron runtime package contract', () => {
     expect(afterInstallScript).not.toContain('chmod 0755 "$sandbox"')
   })
 
-  it('advances only the skill release ledger in a taggable release-cut commit', () => {
+  it('keeps package manifests synchronized in a taggable release-cut commit', () => {
     const releaseWorkflow = readFileSync(
       join(projectDir, '.github/workflows/release-cut.yml'),
       'utf8'
@@ -354,15 +354,22 @@ describe('Electron runtime package contract', () => {
     const mentioned = new Set(commands.match(/resources[/\\]skills[^\s'"]*/g))
     expect(checkoutStep.with['fetch-depth']).toBe(0)
     expect(bumpIndex).toBeGreaterThanOrEqual(0)
+    expect(bumpStep.run).toContain(
+      'npm --prefix resources/npm-server version "$VERSION" --no-git-tag-version --allow-same-version'
+    )
     // Why: the cut is the only point that advances the release ledger, so this
     // tag's revision is never rebuilt later — it appends that row, nothing else.
     expect(generateIndex).toBeGreaterThan(bumpIndex)
     expect(bumpStep.run.indexOf('git add package.json')).toBeGreaterThan(generateIndex)
-    expect(stagedPaths).toEqual(['package.json', 'resources/skills/release-mapping.json'])
+    expect(stagedPaths).toEqual([
+      'package.json',
+      'resources/npm-server/package.json',
+      'resources/skills/release-mapping.json'
+    ])
     // Every distinct mention must be staged, so a copy, a redirect, or a path
     // held in a variable cannot reach the content-addressed artifacts. Matched
     // without a trailing slash so `dir="resources/skills"` still counts.
-    expect([...mentioned]).toEqual(stagedPaths.slice(1))
+    expect([...mentioned]).toEqual(['resources/skills/release-mapping.json'])
     // Regeneration is banned job-wide by the generator suite. Here: `-a`, `-am`,
     // and `--all` sweep unstaged artifacts in; `--allow-empty` below must not.
     expect(commands).not.toMatch(/\bcommit\b[^\n]*(?:\s-[a-z]*a[a-z]*\b|\s--all\b)/)

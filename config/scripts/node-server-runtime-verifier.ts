@@ -13,6 +13,7 @@ import {
   startNodeServerVerifierProcess,
   stopNodeServerVerifierProcess,
   terminateNodeServerVerifierProcess,
+  verifyNodeServerStartupCancellation,
   type NodeServerVerifierProcess
 } from './node-server-verifier-server-process'
 const cliPath = resolve(readArgument('--cli') ?? 'resources/npm-server/dist/cli.js')
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
   try {
     initializeNodeServerVerifierGitWorkspace(gitPath)
     mkdirSync(folderPath)
+    await verifyNodeServerStartupCancellation({ cliPath, dataPath })
 
     const first = await startNodeServerVerifierProcess({ cliPath, dataPath })
     activeServer = first

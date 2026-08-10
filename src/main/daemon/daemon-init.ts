@@ -928,7 +928,8 @@ export async function initDaemonPtyProvider(
   // Why: e2e coverage for the startup PTY gate (#5232) needs a daemon init that deterministically outlasts the first-window timeout.
   const e2eInitDelayMs = Number(process.env.ORCA_E2E_DAEMON_INIT_DELAY_MS)
   if (Number.isFinite(e2eInitDelayMs) && e2eInitDelayMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, e2eInitDelayMs))
+    await waitForDaemonInitDelay(e2eInitDelayMs, signal)
+    signal?.throwIfAborted()
   }
   const runtimeDir = getRuntimeDir()
 
@@ -1035,6 +1036,19 @@ export async function initDaemonPtyProvider(
     legacyAdapters: legacyAdapters.length
   })
   await reconcileSeededClaudeLivePtys(routedAdapter)
+}
+
+function waitForDaemonInitDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(finish, delayMs)
+    signal?.addEventListener('abort', finish, { once: true })
+
+    function finish(): void {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', finish)
+      resolve()
+    }
+  })
 }
 
 // Why: release gate ids only for daemon-confirmed-dead sessions; keep seeds on listing failure since releasing early can rotate a live CLI's refresh token.

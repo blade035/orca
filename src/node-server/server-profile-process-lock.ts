@@ -14,6 +14,7 @@ import {
 } from '../main/agent-hooks/managed-hook-owner-identity'
 
 const MAX_RECOVERY_ATTEMPTS = 32
+const RELEASE_RETRY_DELAYS_MS = [0, 25, 100] as const
 
 export type ServerProfileProcessLock = {
   ownerPid: number
@@ -166,25 +167,37 @@ function createOwnedLock(
       if (released) {
         return
       }
+      let lastFailure: unknown
       try {
-        const removal = await removeManagedHookLock(
-          lockPath,
-          lockParent,
-          owner,
-          hostIdentity,
-          processIdentity
-        )
-        if (removal !== 'removed') {
-          throw new ServerProfileProcessLockError(
-            'release_failed',
-            `Could not release the Orca server profile lock: ${removal}`,
-            owner.pid
-          )
+        for (const delayMs of RELEASE_RETRY_DELAYS_MS) {
+          if (delayMs > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+          }
+          try {
+            const removal = await removeManagedHookLock(
+              lockPath,
+              lockParent,
+              owner,
+              hostIdentity,
+              processIdentity
+            )
+            if (removal === 'removed') {
+              released = true
+              return
+            }
+            lastFailure = new ServerProfileProcessLockError(
+              'release_failed',
+              `Could not release the Orca server profile lock: ${removal}`,
+              owner.pid
+            )
+          } catch (error) {
+            lastFailure = error
+          }
         }
-        released = true
       } finally {
         deactivateManagedHookLockOwner(owner.token)
       }
+      throw lastFailure
     }
   }
 }

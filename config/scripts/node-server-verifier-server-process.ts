@@ -22,30 +22,60 @@ export type NodeServerVerifierProcess = {
   stderr: string[]
 }
 
+export async function verifyNodeServerStartupCancellation(args: {
+  cliPath: string
+  dataPath: string
+}): Promise<void> {
+  if (process.platform === 'win32') {
+    return
+  }
+  const child = spawn(process.execPath, serverArguments(args.cliPath), {
+    env: {
+      ...process.env,
+      ORCA_E2E_DAEMON_INIT_DELAY_MS: '30000',
+      ORCA_SERVER_DATA_DIR: args.dataPath,
+      ORCA_STARTUP_DIAGNOSTICS: '1'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout?.setEncoding('utf8')
+  child.stdout?.on('data', (chunk: string) => {
+    stdout += chunk
+  })
+  child.stderr?.setEncoding('utf8')
+  child.stderr?.on('data', (chunk: string) => {
+    stderr += chunk
+  })
+
+  try {
+    await waitForDaemonInitMarker(child, () => stderr)
+    if (!child.kill('SIGTERM')) {
+      throw new Error('server rejected the startup shutdown signal')
+    }
+    const result = await waitForInstalledServerExit(child)
+    if (!isExpectedInstalledServerStopResult(result, process.platform)) {
+      throw new Error(`server startup shutdown failed (${result.code ?? result.signal}): ${stderr}`)
+    }
+    if (stdout.length > 0) {
+      throw new Error(`server published readiness during startup shutdown: ${stdout}`)
+    }
+  } finally {
+    await terminateNodeServerVerifierProcess(child)
+  }
+}
+
 export function startNodeServerVerifierProcess(args: {
   cliPath: string
   dataPath: string
 }): Promise<NodeServerVerifierProcess> {
   return new Promise((resolveStart, rejectStart) => {
     const stderr: string[] = []
-    const child = spawn(
-      process.execPath,
-      [
-        args.cliPath,
-        'serve',
-        '--port',
-        '0',
-        '--listen',
-        '127.0.0.1',
-        '--pairing-address',
-        '127.0.0.1',
-        '--json'
-      ],
-      {
-        env: { ...process.env, ORCA_SERVER_DATA_DIR: args.dataPath },
-        stdio: ['ignore', 'pipe', 'pipe']
-      }
-    )
+    const child = spawn(process.execPath, serverArguments(args.cliPath), {
+      env: { ...process.env, ORCA_SERVER_DATA_DIR: args.dataPath },
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
     let stdout = ''
     let settled = false
     const timeout = setTimeout(() => fail(new Error('server readiness timed out')), 30_000)
@@ -103,6 +133,54 @@ export function startNodeServerVerifierProcess(args: {
             new AggregateError([error, terminationError], 'server readiness cleanup failed')
           )
       )
+    }
+  })
+}
+
+function serverArguments(cliPath: string): string[] {
+  return [
+    cliPath,
+    'serve',
+    '--port',
+    '0',
+    '--listen',
+    '127.0.0.1',
+    '--pairing-address',
+    '127.0.0.1',
+    '--json'
+  ]
+}
+
+function waitForDaemonInitMarker(child: ChildProcess, readStderr: () => string): Promise<void> {
+  return new Promise((resolveMarker, rejectMarker) => {
+    const timeout = setTimeout(
+      () => finish(new Error(`daemon init marker timed out: ${readStderr()}`)),
+      10_000
+    )
+    child.stderr?.on('data', onStderr)
+    child.once('error', finish)
+    child.once('exit', onExit)
+
+    function onStderr(): void {
+      if (readStderr().includes('[startup] daemon-init-start')) {
+        finish()
+      }
+    }
+
+    function onExit(code: number | null): void {
+      finish(new Error(`server exited before daemon init marker (${code}): ${readStderr()}`))
+    }
+
+    function finish(error?: unknown): void {
+      clearTimeout(timeout)
+      child.stderr?.off('data', onStderr)
+      child.off('error', finish)
+      child.off('exit', onExit)
+      if (error) {
+        rejectMarker(error)
+      } else {
+        resolveMarker()
+      }
     }
   })
 }

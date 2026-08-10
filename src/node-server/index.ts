@@ -10,15 +10,22 @@ import { OrcaRuntimeRpcServer } from '../main/runtime/runtime-rpc'
 import { ServeReadinessPublisher } from '../main/server/serve-readiness'
 import { HEADLESS_RUNTIME_WINDOW_ID } from '../shared/runtime-types'
 import { configureNodeHostEnvironment } from './node-host-electron-facade'
-import { createBrowserlessRuntimeComposition } from './browserless-runtime-composition'
+import {
+  createBrowserlessRuntimeComposition,
+  type BrowserlessRuntimeComposition
+} from './browserless-runtime-composition'
 import { discoverServerPairingAddress } from './server-address-discovery'
+import { resolveServerBindHost } from './server-bind-host'
 import { parseServerCliArguments, renderServerHelp } from './server-cli-arguments'
 import { ensureServerDataPath, resolveServerDataPath } from './server-paths'
+import { configureServerProfileEnvironment } from './server-profile-environment'
 import {
   acquireServerProfileProcessLock,
   ServerProfileProcessLockError
 } from './server-profile-process-lock'
 import { createServerWindowGraph } from './server-window-graph'
+import { createServerShutdownCoordinator } from './server-shutdown-coordinator'
+import { installServerSignalShutdown } from './server-signal-shutdown'
 import { requireServerWebSocketEndpoint } from './server-websocket-readiness'
 
 export async function runNodeServer(argv = process.argv.slice(2)): Promise<void> {
@@ -34,6 +41,7 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
 
   const appPath = __dirname
   const dataPath = resolveServerDataPath(args.dataPath)
+  configureServerProfileEnvironment(dataPath)
   ensureServerDataPath(dataPath)
   configureNodeHostEnvironment({ appPath, dataPath, version: packageJson.version })
   process.env.ORCA_APP_VERSION = packageJson.version
@@ -43,24 +51,23 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
     }
     throw error
   })
-  initDataPath()
 
-  const store = new Store({ dataFile: join(dataPath, 'orca-data.json') })
-  const composition = createBrowserlessRuntimeComposition({ store, dataPath })
-  const { runtime } = composition
-
+  let store: Store | null = null
+  let composition: BrowserlessRuntimeComposition | null = null
   let rpc: OrcaRuntimeRpcServer | null = null
-  let shuttingDown = false
-  const shutdown = async (exitCode: number): Promise<void> => {
-    if (shuttingDown) {
-      return
-    }
-    shuttingDown = true
+  let startupPromise: Promise<void> | null = null
+  const startupAbortController = new AbortController()
+  const shutdown = createServerShutdownCoordinator(async (getRequestedExitCode) => {
     const lifecycleResults = await settleLifecycleSteps([
+      () =>
+        startupPromise?.then(
+          () => undefined,
+          () => undefined
+        ) ?? Promise.resolve(),
       () => rpc?.stop() ?? Promise.resolve(),
-      () => composition.stop(),
+      () => composition?.stop() ?? Promise.resolve(),
       () => disconnectDaemon(),
-      () => store.flushAsync()
+      () => store?.flushAsync() ?? Promise.resolve()
     ])
     const lifecycleFailed = lifecycleResults.some((result) => result.status === 'rejected')
     const lockReleased = await profileLock.release().then(
@@ -72,49 +79,63 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
         return false
       }
     )
-    process.exitCode = lifecycleFailed || !lockReleased ? 1 : exitCode
-  }
+    process.exitCode = lifecycleFailed || !lockReleased ? 1 : getRequestedExitCode()
+  })
+  installServerSignalShutdown({
+    emitter: process,
+    shutdown,
+    exit: (exitCode) => process.exit(exitCode),
+    getExitCode: () => (typeof process.exitCode === 'number' ? process.exitCode : 0),
+    onSignal: () => startupAbortController.abort()
+  })
 
   try {
-    await initDaemonPtyProvider(undefined, { macosLoginSessionWatch: false })
-    await composition.startAfterDaemon()
-    runtime.syncWindowGraph(HEADLESS_RUNTIME_WINDOW_ID, createServerWindowGraph(store))
-    const pairingAddress = await discoverServerPairingAddress(args.pairingAddress)
-    validatePairingAddress(pairingAddress.address)
-    rpc = new OrcaRuntimeRpcServer({
-      runtime,
-      userDataPath: dataPath,
-      enableWebSocket: true,
-      preferPinnedWsPort: args.port !== 0,
-      wsBindHost:
-        args.listenHost ??
-        (pairingAddress.source === 'tailscale'
-          ? pairingAddress.address
-          : pairingAddress.source === 'explicit'
-            ? '0.0.0.0'
-            : '127.0.0.1'),
-      wsPort: args.port,
-      webClientRoot: resolveWebClientRoot(appPath)
-    })
-    await rpc.start()
-    requireServerWebSocketEndpoint(rpc.getWebSocketEndpoint())
-    await publishReadiness(runtime, rpc, args, pairingAddress.address)
-    if (!args.json && pairingAddress.source === 'loopback' && process.env.SSH_CONNECTION) {
-      const resolvedPort = new URL(rpc.getWebSocketEndpoint()!).port
-      process.stdout.write(
-        `SSH tunnel: ssh -L ${resolvedPort}:127.0.0.1:${resolvedPort} ${process.env.USER ?? 'user'}@<server>\n`
-      )
-    }
-    const stopForSignal = (): void => {
-      void shutdown(0).then(() =>
-        process.exit(typeof process.exitCode === 'number' ? process.exitCode : 0)
-      )
-    }
-    process.once('SIGINT', stopForSignal)
-    process.once('SIGTERM', stopForSignal)
+    initDataPath()
+    store = new Store({ dataFile: join(dataPath, 'orca-data.json') })
+    composition = createBrowserlessRuntimeComposition({ store, dataPath })
+    const activeStore = store
+    const activeComposition = composition
+    const { runtime } = activeComposition
+    startupPromise = (async () => {
+      const { signal } = startupAbortController
+      signal.throwIfAborted()
+      await initDaemonPtyProvider(signal, { macosLoginSessionWatch: false })
+      signal.throwIfAborted()
+      await activeComposition.startAfterDaemon()
+      signal.throwIfAborted()
+      runtime.syncWindowGraph(HEADLESS_RUNTIME_WINDOW_ID, createServerWindowGraph(activeStore))
+      const pairingAddress = await discoverServerPairingAddress(args.pairingAddress)
+      signal.throwIfAborted()
+      validatePairingAddress(pairingAddress.address)
+      rpc = new OrcaRuntimeRpcServer({
+        runtime,
+        userDataPath: dataPath,
+        enableWebSocket: true,
+        preferPinnedWsPort: args.port !== 0,
+        wsBindHost: resolveServerBindHost(args.listenHost, pairingAddress),
+        wsPort: args.port,
+        webClientRoot: resolveWebClientRoot(appPath)
+      })
+      await rpc.start()
+      signal.throwIfAborted()
+      requireServerWebSocketEndpoint(rpc.getWebSocketEndpoint())
+      await publishReadiness(runtime, rpc, args, pairingAddress.address, signal)
+      signal.throwIfAborted()
+      if (!args.json && pairingAddress.source === 'loopback' && process.env.SSH_CONNECTION) {
+        const resolvedPort = new URL(rpc.getWebSocketEndpoint()!).port
+        process.stdout.write(
+          `SSH tunnel (run locally with the same SSH target): ssh -L ${resolvedPort}:127.0.0.1:${resolvedPort} ${process.env.USER ?? 'user'}@<same-ssh-host>\n`
+        )
+      }
+    })()
+    await startupPromise
   } catch (error) {
-    await shutdown(1)
-    throw error
+    if (startupAbortController.signal.aborted) {
+      await shutdown(0)
+    } else {
+      await shutdown(1)
+      throw error
+    }
   }
 }
 
@@ -149,8 +170,10 @@ async function publishReadiness(
   runtime: OrcaRuntimeService,
   rpc: OrcaRuntimeRpcServer,
   args: ReturnType<typeof parseServerCliArguments>,
-  pairingAddress: string
+  pairingAddress: string,
+  signal: AbortSignal
 ): Promise<void> {
+  signal.throwIfAborted()
   const boundEndpoint = requireServerWebSocketEndpoint(rpc.getWebSocketEndpoint())
   const advertised = resolveAdvertisedPairingEndpoint(boundEndpoint, pairingAddress)
   const pairing = args.noPairing
@@ -160,6 +183,7 @@ async function publishReadiness(
         guidance: 'Restart without --no-pairing to create a client pairing offer.'
       }
     : rpc.createPairingOffer({ address: pairingAddress, name: 'Orca npm server', scope: 'runtime' })
+  signal.throwIfAborted()
   await new ServeReadinessPublisher().publish(
     {
       runtimeId: runtime.getRuntimeId(),
@@ -178,7 +202,8 @@ async function publishReadiness(
           }
         : pairing
     },
-    { mode: args.json ? 'json' : 'human' }
+    { mode: args.json ? 'json' : 'human' },
+    signal
   )
 }
 

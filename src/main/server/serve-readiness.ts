@@ -37,10 +37,15 @@ export class ServeReadinessPublisher {
 
   constructor(private readonly write: ReadinessWrite = writeStdout) {}
 
-  async publish(readiness: ServeReadiness, output: ServeReadinessOutput): Promise<void> {
+  async publish(
+    readiness: ServeReadiness,
+    output: ServeReadinessOutput,
+    signal?: AbortSignal
+  ): Promise<void> {
     if (this.state !== 'pending') {
       throw new Error(`Serve readiness publication already ${this.state}`)
     }
+    signal?.throwIfAborted()
     this.state = 'publishing'
     try {
       await this.write(`${renderServeReadiness(readiness, output)}\n`)
