@@ -391,7 +391,7 @@ the terminal marker.
 
 ### Accepted platform follow-ups
 
-- [ ] Run the installed-package runtime oracle inside WSL.
+- [x] Run the installed-package runtime oracle inside WSL.
 - [ ] Run the installed-package runtime oracle on Windows arm64 hardware.
 - [ ] Add and validate nested SSH connection-manager lifecycle parity for the browserless host.
 
@@ -471,18 +471,20 @@ unrelated platform-specific skip in 10.29 seconds. It covers commit-point reconc
 repo-scoped fork-remote lifecycle serialization and compensation, strict empty-inventory handling,
 instance-fenced removal, relay filesystem mutation settlement, legacy relay fallback, and the
 failed-shutdown watchdog. A Docker rerun after these lifecycle edits was blocked by an unrelated
-wedged local Docker Desktop daemon; the earlier package matrix remains green, and the final Linux
-package rerun is delegated to required CI.
+wedged local Docker Desktop daemon; the required Ubuntu and Windows package lanes passed on the
+exact source candidate in CI.
 
 Ten fresh-profile installed-package trials on macOS arm64 reached the first schema-v1 readiness
 line in 352.705–748.323 ms, with a 369.474 ms median. Recursive process snapshots at one and three
 seconds were stable in every trial: one server, one daemon, no daemon PTY children, and no other
 subprocesses. Every measured server and daemon exited cleanly after its trial.
 
-The exact code candidate `8946cc3cc8ba80f48f95266b47552da217a6f261` also passed on the paired
-Windows host: 3 focused fixture/path/address files with 9 tests, Node typecheck, the node-server
-build, clean pack/install, and the full runtime oracle. The platform package measured 18,146,521
-packed bytes and 55,066,730 unpacked bytes, and left no server or daemon process behind.
+The exact code candidate `4bb4ff8753d2160041bd7ab1acbe26bc14e37958` also passed on the paired
+Windows host: Node typecheck, the node-server build, clean pack/install, and the full runtime
+oracle. The native Windows package measured 18,243,548 packed bytes and 55,905,519 unpacked bytes.
+The same candidate passed the clean installed-package and runtime oracle inside Ubuntu 24.04 WSL;
+that package measured 18,242,422 packed bytes and 55,905,664 unpacked bytes. Process inspection
+found no test-owned server or daemon after either oracle.
 
 As an overlapping final packaging subset, the installed-process harness passed 2 tests and the
 package-workflow contract passed 4 tests. These six tests are already included in the focused and
@@ -490,9 +492,9 @@ workflow counts above rather than added to them.
 
 The required Windows Server 2022 x64 lane passed the full clean-install, E2EE, workspace, native
 PTY, restart, and cleanup journey on the exact code candidate. The explicit untested platform gaps
-remain WSL, Windows arm64, and nested SSH connection-manager parity in the browserless host. The
-PTY dependency contains Windows arm64 prebuilds, but a present binary is not runtime evidence for
-that untested target.
+remain Windows arm64 and nested SSH connection-manager parity in the browserless host. The PTY
+dependency contains Windows arm64 prebuilds, but a present binary is not runtime evidence for that
+untested target.
 
 The package remains unpublished: the registry currently has neither `rc` nor `latest`. The PTY
 package also retains a deprecated transitive `prebuild-install` fallback; clean installs select the

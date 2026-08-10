@@ -1259,7 +1259,8 @@ describe('GitHandler', () => {
           'origin',
           '+refs/heads/main:refs/remotes/origin/main'
         ],
-        tmpDir
+        tmpDir,
+        { signal: undefined }
       )
     })
 
