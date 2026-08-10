@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const repoRoot = resolve(import.meta.dirname, '..', '..')
-const packageRoot = join(repoRoot, 'packages', 'orca-server')
+const packageRoot = join(repoRoot, 'resources', 'npm-server')
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'orca-server-package-'))
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 

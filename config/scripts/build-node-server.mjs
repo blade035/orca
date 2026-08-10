@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { build } from 'esbuild'
 
 const repoRoot = resolve(import.meta.dirname, '..', '..')
-const packageRoot = join(repoRoot, 'packages', 'orca-server')
+const packageRoot = join(repoRoot, 'resources', 'npm-server')
 const distRoot = join(packageRoot, 'dist')
 const facadePath = join(repoRoot, 'src', 'node-server', 'node-host-electron-facade.ts')
 const external = ['@parcel/watcher', 'node-pty', 'ssh2', 'tweetnacl', 'ws']

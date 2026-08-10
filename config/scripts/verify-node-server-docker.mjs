@@ -11,7 +11,7 @@ const versions = readVersions()
 try {
   const packOutput = await runCapture('npm', [
     'pack',
-    join(repoRoot, 'packages', 'orca-server'),
+    join(repoRoot, 'resources', 'npm-server'),
     '--json',
     '--pack-destination',
     contextRoot

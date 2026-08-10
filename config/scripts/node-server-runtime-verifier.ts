@@ -19,7 +19,7 @@ type ReadyPayload = {
 }
 
 type RunningServer = { child: ChildProcess; ready: ReadyPayload; stderr: string[] }
-const cliPath = resolve(readArgument('--cli') ?? 'packages/orca-server/dist/cli.js')
+const cliPath = resolve(readArgument('--cli') ?? 'resources/npm-server/dist/cli.js')
 const shortTemporaryRoot = process.platform === 'win32' ? tmpdir() : '/tmp'
 const ownedRoot = realpathSync(mkdtempSync(join(shortTemporaryRoot, 'orca-nsv-')))
 const dataPath = join(ownedRoot, 'state')
