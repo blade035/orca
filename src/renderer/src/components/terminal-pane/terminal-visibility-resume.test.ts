@@ -30,9 +30,10 @@ vi.mock('@/lib/pane-manager/pane-fit', () => ({
   flushDeferredPaneMetricOptionsIfMeasurable: (pane: unknown) =>
     flushDeferredPaneMetricOptionsIfMeasurable(pane)
 }))
-const repairPaneWebglCanvasDprMismatch = vi.fn((_pane: unknown) => false)
-vi.mock('@/lib/pane-manager/terminal-canvas-dpr-repair', () => ({
-  repairPaneWebglCanvasDprMismatch: (pane: unknown) => repairPaneWebglCanvasDprMismatch(pane)
+const repairPaneWebglCanvasBackingMismatch = vi.fn((_pane: unknown) => false)
+vi.mock('@/lib/pane-manager/terminal-canvas-backing-repair', () => ({
+  repairPaneWebglCanvasBackingMismatch: (pane: unknown) =>
+    repairPaneWebglCanvasBackingMismatch(pane)
 }))
 const resetTerminalLinkifierHoverState = vi.fn()
 const isTerminalLinkifierHoverActive = vi.fn((_terminal: unknown) => false)
@@ -163,9 +164,9 @@ describe('resumeTerminalVisibility reveal repaint', () => {
 
     resumeTerminalVisibility(resumeArgs(manager, true))
 
-    expect(repairPaneWebglCanvasDprMismatch).toHaveBeenCalledTimes(2)
-    expect(repairPaneWebglCanvasDprMismatch).toHaveBeenNthCalledWith(1, first)
-    expect(repairPaneWebglCanvasDprMismatch).toHaveBeenNthCalledWith(2, second)
+    expect(repairPaneWebglCanvasBackingMismatch).toHaveBeenCalledTimes(2)
+    expect(repairPaneWebglCanvasBackingMismatch).toHaveBeenNthCalledWith(1, first)
+    expect(repairPaneWebglCanvasBackingMismatch).toHaveBeenNthCalledWith(2, second)
   })
 
   it('flushes hidden-era metric options on reveal and refits the light path', () => {

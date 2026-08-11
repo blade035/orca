@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
   requestStablePaneFit: vi.fn(),
   clearPaneFitContinuationRetry: vi.fn(),
   resumePendingFitScrollRestoreAfterFit: vi.fn(),
-  flushDeferredPaneMetricOptionsIfMeasurable: vi.fn(() => false)
+  flushDeferredPaneMetricOptionsIfMeasurable: vi.fn(() => false),
+  repairPaneWebglCanvasBackingMismatch: vi.fn(() => false)
 }))
 
 vi.mock('./pane-fit', () => ({
@@ -28,6 +29,9 @@ vi.mock('./pane-fit-continuation-retry', () => ({
 }))
 vi.mock('./pane-scroll', () => ({
   resumePendingFitScrollRestoreAfterFit: mocks.resumePendingFitScrollRestoreAfterFit
+}))
+vi.mock('./terminal-canvas-backing-repair', () => ({
+  repairPaneWebglCanvasBackingMismatch: mocks.repairPaneWebglCanvasBackingMismatch
 }))
 
 type RevealTestPane = ManagedPane & { lastFitClientSize?: { width: number; height: number } }
@@ -155,6 +159,45 @@ describe('fitRevealedPane routing', () => {
     expect(mocks.safeFit).not.toHaveBeenCalled()
     // Not the plain-release path — the stable fit owns continuation release here.
     expect(mocks.flushPendingSafeFitContinuations).not.toHaveBeenCalled()
+  })
+
+  it('repairs the canvas backing store synchronously, after the grid fit', () => {
+    // The blurry reveal: a hidden-time layout change refits the grid here while
+    // xterm still holds the pre-hide backing. Deferring the repair to rAF is what
+    // stretches the rescaled-frame window, so it must land in this same task.
+    const raf = vi.fn()
+    vi.stubGlobal('requestAnimationFrame', raf)
+    const pane = createPane({
+      lastFitClientSize: { width: 800, height: 600 },
+      currentSize: { width: 640, height: 480 },
+      terminal: { cols: 80, rows: 24 },
+      proposed: { cols: 64, rows: 20 }
+    })
+
+    fitRevealedPane(pane)
+
+    expect(mocks.repairPaneWebglCanvasBackingMismatch).toHaveBeenCalledWith(pane)
+    expect(mocks.repairPaneWebglCanvasBackingMismatch.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      mocks.safeFit.mock.invocationCallOrder[0]!
+    )
+    expect(raf).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it('repairs the canvas backing store on the branches that skip the fit', () => {
+    // A dpr change behind display:none moves neither pixels nor grid, so this
+    // branch is the only reveal-time repair point it has.
+    const pane = createPane({
+      lastFitClientSize: { width: 800, height: 600 },
+      currentSize: { width: 800, height: 600 },
+      terminal: { cols: 80, rows: 24 },
+      proposed: { cols: 80, rows: 24 }
+    })
+
+    fitRevealedPane(pane)
+
+    expect(mocks.safeFit).not.toHaveBeenCalled()
+    expect(mocks.repairPaneWebglCanvasBackingMismatch).toHaveBeenCalledWith(pane)
   })
 
   it('does not release continuations when an unchanged pane is unmeasurable', () => {
