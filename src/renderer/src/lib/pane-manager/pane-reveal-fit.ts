@@ -9,7 +9,6 @@ import {
 import { requestStablePaneFit } from './pane-fit-resize-observer'
 import { clearPaneFitContinuationRetry } from './pane-fit-continuation-retry'
 import { resumePendingFitScrollRestoreAfterFit } from './pane-scroll'
-import { repairPaneWebglCanvasBackingMismatch } from './terminal-canvas-backing-repair'
 
 // Why: a real resize changes the element's pixels; a metric-only wobble does not.
 // No baseline / unmeasurable counts as changed so a first reveal still fits.
@@ -51,30 +50,18 @@ function releaseMeasurableFitContinuations(pane: ManagedPane): void {
   clearPaneFitContinuationRetry(pane)
 }
 
-// Reveal fit (minimize→restore, worktree foreground, window wake): settle the
-// grid, then the canvas surface that has to agree with it.
-export function fitRevealedPane(pane: ManagedPane): void {
-  fitRevealedPaneGrid(pane)
-  // Why synchronously, in this same task: the grid above re-measures a layout
-  // change that landed while the pane was hidden, but xterm defers the matching
-  // canvas resize while its render service is still paused, so the compositor
-  // rescales the pre-hide surface into the new box (blurry, outlined text).
-  // rAF is the very queue that stretches that window, so the backing store has
-  // to be corrected before this task yields. No-ops when it already agrees.
-  repairPaneWebglCanvasBackingMismatch(pane)
-}
-
-// resumeRendering re-attaches WebGL, whose cell metrics briefly differ from the
-// DOM renderer's, so a raw fit can propose a one-column-off grid, reflow xterm,
-// then snap back — and xterm's wrap→unwrap is not a perfect inverse, so a
-// diff-painting inline TUI (grok, Codex) is left corrupted. So:
+// Reveal fit (minimize→restore, worktree foreground, window wake). resumeRendering
+// re-attaches WebGL, whose cell metrics briefly differ from the DOM renderer's, so
+// a raw fit can propose a one-column-off grid, reflow xterm, then snap back — and
+// xterm's wrap→unwrap is not a perfect inverse, so a diff-painting inline TUI
+// (grok, Codex) is left corrupted. So:
 //  - pixels changed while hidden → real resize: fit now (also keeps xterm ahead of
 //    the async {fit:false} PTY size reassert so it can't forward a stale grid);
 //  - pixels unchanged but grid diverged (a direct terminal.resize from snapshot /
 //    SSH-reattach, or a DPI change) → repair on a steady grid, so a sustained
 //    mismatch refits but a transient metric wobble does not reflow;
 //  - grid already correct → leave it alone.
-function fitRevealedPaneGrid(pane: ManagedPane): void {
+export function fitRevealedPane(pane: ManagedPane): void {
   // Why first: the checks below can both say "nothing to do" and return without
   // fitting, stranding metric options parked while the pane was unmeasurable.
   const flushed = flushDeferredPaneMetricOptionsIfMeasurable(pane)

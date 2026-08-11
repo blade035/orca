@@ -9,7 +9,7 @@ import {
 } from './terminal-webgl-auto-policy'
 import { safeFit, safeFitAndThen } from './pane-fit'
 import { setPaneFitWebglAttachHook } from './pane-fit-webgl-attach-signal'
-import { repairPaneWebglCanvasBackingMismatch } from './terminal-canvas-backing-repair'
+import { repairPaneWebglCanvasDprMismatch } from './terminal-canvas-dpr-repair'
 
 export const ENABLE_WEBGL_RENDERER = true
 let suggestedRendererType: 'dom' | undefined
@@ -206,9 +206,9 @@ export function attachWebglAfterFitIfMissing(pane: ManagedPaneInternal): void {
 setPaneFitWebglAttachHook((pane) => {
   attachWebglAfterFitIfMissing(pane)
   // Why here too: a fit proves the pane has a live box, which is the earliest
-  // safe moment to catch a canvas whose backing store still reflects the grid
-  // or devicePixelRatio from before a hidden-time layout/display change.
-  repairPaneWebglCanvasBackingMismatch(pane)
+  // safe moment to catch a canvas whose backing store still reflects a
+  // devicePixelRatio from before a hidden-time display change.
+  repairPaneWebglCanvasDprMismatch(pane)
 })
 
 export function attachWebgl(pane: ManagedPaneInternal): void {
