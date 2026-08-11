@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import packageJson from '../../package.json' with { type: 'json' }
 import { disconnectDaemon, initDaemonPtyProvider } from '../main/daemon/daemon-init'
 import { initDataPath, Store } from '../main/persistence'
 import type { OrcaRuntimeService } from '../main/runtime/orca-runtime'
 import { resolveAdvertisedPairingEndpoint } from '../main/runtime/pairing-endpoint'
+import { configureRemoteServerUpdater } from '../main/runtime/remote-server-updater'
 import { OrcaRuntimeRpcServer } from '../main/runtime/runtime-rpc'
 import { ServeReadinessPublisher } from '../main/server/serve-readiness'
 import { HEADLESS_RUNTIME_WINDOW_ID } from '../shared/runtime-types'
@@ -24,18 +24,29 @@ import {
   ServerProfileProcessLockError
 } from './server-profile-process-lock'
 import { createServerWindowGraph } from './server-window-graph'
+import { createNpmServerUpdater } from './npm-server-updater'
+import { readNpmRuntimeVersion } from './npm-runtime-version'
+import { notifyNpmSupervisorReady } from './npm-supervisor-protocol'
+import { npmSupervisorStartupFailure, readNpmSupervisorState } from './npm-supervisor-state'
 import { createServerShutdownCoordinator } from './server-shutdown-coordinator'
 import { installServerSignalShutdown } from './server-signal-shutdown'
 import { requireServerWebSocketEndpoint } from './server-websocket-readiness'
 
-export async function runNodeServer(argv = process.argv.slice(2)): Promise<void> {
+export async function runNodeServer(
+  argv = process.argv.slice(2),
+  options: {
+    beforeRpcStart?: (runtimeId: string, signal: AbortSignal) => Promise<void>
+    onSignalHandlersReady?: () => void
+  } = {}
+): Promise<void> {
   const args = parseServerCliArguments(argv)
+  const runtimeVersion = readNpmRuntimeVersion()
   if (args.command === 'help') {
     process.stdout.write(`${renderServerHelp()}\n`)
     return
   }
   if (args.command === 'version') {
-    process.stdout.write(`${packageJson.version}\n`)
+    process.stdout.write(`${runtimeVersion}\n`)
     return
   }
 
@@ -43,20 +54,27 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
   const dataPath = resolveServerDataPath(args.dataPath)
   configureServerProfileEnvironment(dataPath)
   ensureServerDataPath(dataPath)
-  configureNodeHostEnvironment({ appPath, dataPath, version: packageJson.version })
-  process.env.ORCA_APP_VERSION = packageJson.version
+  configureNodeHostEnvironment({ appPath, dataPath, version: runtimeVersion })
+  process.env.ORCA_APP_VERSION = runtimeVersion
   const profileLock = await acquireServerProfileProcessLock(dataPath).catch((error: unknown) => {
     if (error instanceof ServerProfileProcessLockError && error.reason === 'already_owned') {
       process.exitCode = 3
     }
     throw error
   })
+  const startupAbortController = new AbortController()
+  const supervisorState = await readNpmSupervisorState(dataPath)
+  const updater = createNpmServerUpdater({
+    dataPath,
+    initialFailure: npmSupervisorStartupFailure(supervisorState),
+    signal: startupAbortController.signal
+  })
+  configureRemoteServerUpdater(updater)
 
   let store: Store | null = null
   let composition: BrowserlessRuntimeComposition | null = null
   let rpc: OrcaRuntimeRpcServer | null = null
   let startupPromise: Promise<void> | null = null
-  const startupAbortController = new AbortController()
   const shutdown = createServerShutdownCoordinator(async (getRequestedExitCode) => {
     const lifecycleResults = await settleLifecycleSteps([
       () =>
@@ -65,6 +83,7 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
           () => undefined
         ) ?? Promise.resolve(),
       () => rpc?.stop() ?? Promise.resolve(),
+      () => updater.stop(),
       () => composition?.stop() ?? Promise.resolve(),
       () => disconnectDaemon(),
       () => store?.flushAsync() ?? Promise.resolve()
@@ -90,6 +109,7 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
     onForceExit: () =>
       process.stderr.write('Orca server shutdown exceeded 30 seconds; forcing exit.\n')
   })
+  options.onSignalHandlersReady?.()
 
   try {
     initDataPath()
@@ -118,6 +138,8 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
         wsPort: args.port,
         webClientRoot: resolveWebClientRoot(appPath)
       })
+      await options.beforeRpcStart?.(runtime.getRuntimeId(), signal)
+      signal.throwIfAborted()
       await rpc.start()
       signal.throwIfAborted()
       requireServerWebSocketEndpoint(rpc.getWebSocketEndpoint())
@@ -131,6 +153,7 @@ export async function runNodeServer(argv = process.argv.slice(2)): Promise<void>
       }
     })()
     await startupPromise
+    await notifyNpmSupervisorReady(runtimeVersion, composition.runtime.getRuntimeId())
   } catch (error) {
     if (startupAbortController.signal.aborted) {
       await shutdown(0)

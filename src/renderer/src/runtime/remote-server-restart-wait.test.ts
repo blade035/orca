@@ -96,7 +96,7 @@ describe('waitForReplacementRuntime', () => {
 
   it('keeps the total wait inside the budget when the status RPC eats it before the probe', async () => {
     let clock = 0
-    const reconnectTimeoutMs = 20_000
+    const reconnectTimeoutMs = 15_000
 
     await expect(
       waitForReplacementRuntime(
@@ -116,7 +116,7 @@ describe('waitForReplacementRuntime', () => {
             return runtime('1.4.0', 'runtime-old')
           }
         },
-        install,
+        { ...install, acknowledgementId: '00000000-0000-4000-8000-000000000000' },
         { reconnectTimeoutMs, pollIntervalMs: 500 }
       )
     ).rejects.toThrow('remote_update_reconnect_timeout')

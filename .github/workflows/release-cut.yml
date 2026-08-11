@@ -1855,11 +1855,173 @@ jobs:
           RELEASE_MAC_BUILD_TAG: ${{ needs.cut.outputs.tag }}
           RELEASE_MAC_BUILD_WORKFLOW: release-mac-build.yml
 
+  publish-npm-server:
+    needs:
+      - cut
+      - build
+      - build-mac
+      - terminal-rendering-golden
+    if: needs.cut.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.cut.outputs.tag }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js and npm registry
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and verify browserless npm server
+        run: |
+          set -euo pipefail
+          pnpm run build:node-server
+          pnpm run verify:node-server-package
+          pnpm run verify:node-server-docker -- --ubuntu 20.04
+
+      - name: Verify release assets before npm publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.cut.outputs.tag }}
+        run: node config/scripts/verify-release-required-assets.mjs "$TAG"
+
+      - name: Publish immutable npm package
+        env:
+          TAG: ${{ needs.cut.outputs.tag }}
+        run: |
+          set -euo pipefail
+          npm_version="$(npm --version)"
+          IFS=. read -r npm_major npm_minor npm_patch <<<"$npm_version"
+          if (( npm_major < 11 || (npm_major == 11 && npm_minor < 5) || (npm_major == 11 && npm_minor == 5 && npm_patch < 1) )); then
+            echo "::error::npm 11.5.1 or newer is required for trusted publishing; found $npm_version."
+            exit 1
+          fi
+          version="${TAG#v}"
+          manifest_version="$(node -p "require('./resources/npm-server/package.json').version")"
+          if [[ "$manifest_version" != "$version" ]]; then
+            echo "::error::npm package version $manifest_version does not match release $version."
+            exit 1
+          fi
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-rc\.(0|[1-9][0-9]*)$ ]]; then
+            dist_tag=rc
+          elif [[ "$version" == *-* ]]; then
+            dist_tag=build
+          else
+            dist_tag=latest
+          fi
+
+          pack_json="$(npm pack ./resources/npm-server --json)"
+          archive="$(jq -er '.[0].filename' <<<"$pack_json")"
+          local_shasum="$(jq -er '.[0].shasum' <<<"$pack_json")"
+          remote_shasum="$(npm view "@stablyai/orca@$version" dist.shasum --json 2>/dev/null | jq -r 'if type == "string" then . else empty end' || true)"
+          if [[ -n "$remote_shasum" ]]; then
+            if [[ "$remote_shasum" != "$local_shasum" ]]; then
+              echo "::error::@stablyai/orca@$version already exists with different immutable bytes."
+              exit 1
+            fi
+            echo "@stablyai/orca@$version is already published with the expected bytes."
+
+            remote_tags="$(npm view "@stablyai/orca" dist-tags --json --prefer-online 2>/dev/null || true)"
+            remote_tag_version="$(jq -r --arg tag "$dist_tag" '.[$tag] // empty' <<<"$remote_tags")"
+            if [[ "$remote_tag_version" != "$version" ]]; then
+              if [[ -n "$remote_tag_version" ]] && ! node - "$version" "$remote_tag_version" <<'NODE'
+          const parse = (value) => {
+            const match = value.match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/)
+            return match
+              ? { core: match.slice(1, 4).map(BigInt), prerelease: match[4]?.split('.') ?? [] }
+              : null
+          }
+          const compareIdentifier = (left, right) => {
+            const leftNumeric = /^\d+$/.test(left)
+            const rightNumeric = /^\d+$/.test(right)
+            if (leftNumeric && rightNumeric) {
+              return BigInt(left) === BigInt(right) ? 0 : BigInt(left) > BigInt(right) ? 1 : -1
+            }
+            if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1
+            return left === right ? 0 : left > right ? 1 : -1
+          }
+          const compare = (left, right) => {
+            for (let index = 0; index < 3; index += 1) {
+              if (left.core[index] !== right.core[index]) {
+                return left.core[index] > right.core[index] ? 1 : -1
+              }
+            }
+            if (left.prerelease.length === 0 || right.prerelease.length === 0) {
+              return left.prerelease.length === right.prerelease.length
+                ? 0
+                : left.prerelease.length === 0
+                  ? 1
+                  : -1
+            }
+            for (
+              let index = 0;
+              index < Math.max(left.prerelease.length, right.prerelease.length);
+              index += 1
+            ) {
+              if (left.prerelease[index] === undefined) return -1
+              if (right.prerelease[index] === undefined) return 1
+              const compared = compareIdentifier(left.prerelease[index], right.prerelease[index])
+              if (compared !== 0) return compared
+            }
+            return 0
+          }
+          const candidate = parse(process.argv[2])
+          const current = parse(process.argv[3])
+          process.exit(candidate && current && compare(candidate, current) > 0 ? 0 : 1)
+          NODE
+              then
+                echo "npm dist-tag $dist_tag already points to newer $remote_tag_version; leaving it unchanged."
+                exit 0
+              fi
+              oidc_request_url="$(node -e 'const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL); url.searchParams.set("audience", "npm:registry.npmjs.org"); process.stdout.write(url.href)')"
+              oidc_response="$(curl --fail-with-body --silent --show-error \
+                --header "Accept: application/json" \
+                --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                "$oidc_request_url")"
+              oidc_token="$(jq -er '.value | select(type == "string" and length > 0)' <<<"$oidc_response")"
+              echo "::add-mask::$oidc_token"
+              npm_token_response="$(curl --fail-with-body --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer $oidc_token" \
+                "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/%40stablyai%2Forca")"
+              npm_token="$(jq -er '.token | select(type == "string" and length > 0)' <<<"$npm_token_response")"
+              echo "::add-mask::$npm_token"
+              NODE_AUTH_TOKEN="$npm_token" npm dist-tag add "@stablyai/orca@$version" "$dist_tag"
+
+              repaired_tags="$(npm view "@stablyai/orca" dist-tags --json --prefer-online)"
+              repaired_tag_version="$(jq -r --arg tag "$dist_tag" '.[$tag] // empty' <<<"$repaired_tags")"
+              if [[ "$repaired_tag_version" != "$version" ]]; then
+                echo "::error::@stablyai/orca@$version was published, but npm dist-tag $dist_tag points to ${repaired_tag_version:-nothing}."
+                exit 1
+              fi
+            fi
+            exit 0
+          fi
+
+          npm publish "$archive" --access public --tag "$dist_tag" --provenance
+
   publish-release:
     needs:
       - cut
       - build
       - build-mac
+      - publish-npm-server
       - terminal-rendering-golden
     runs-on: ubuntu-latest
     permissions:

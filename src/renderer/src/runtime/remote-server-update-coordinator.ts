@@ -49,7 +49,8 @@ export type RemoteServerUpdateTransport = {
   getRuntimeStatus: (environmentId: string, timeoutMs?: number) => Promise<RuntimeStatus>
   getUpdaterStatus: (
     environmentId: string,
-    timeoutMs?: number
+    timeoutMs?: number,
+    acknowledgementId?: string
   ) => Promise<RemoteServerUpdaterSnapshot>
   check: (
     environmentId: string,
@@ -204,9 +205,14 @@ export async function runRemoteServerUpdate(
       includePrerelease:
         entry.targetVersion !== null && isPrereleaseAppVersion(entry.targetVersion),
       includePerfPrerelease:
-        entry.targetVersion !== null && isPerfPrereleaseAppVersion(entry.targetVersion)
+        entry.targetVersion !== null && isPerfPrereleaseAppVersion(entry.targetVersion),
+      ...(entry.targetVersion === null ? {} : { targetVersion: entry.targetVersion })
     }
-    await transport.check(entry.environmentId, options.checkOptions ?? inferredCheckOptions)
+    await transport.check(entry.environmentId, {
+      ...inferredCheckOptions,
+      ...options.checkOptions,
+      ...(entry.targetVersion === null ? {} : { targetVersion: entry.targetVersion })
+    })
     const available = await pollRemoteServerUpdater(
       entry.environmentId,
       transport,
@@ -258,7 +264,15 @@ export async function runRemoteServerUpdate(
       throw new Error('remote_update_download_incomplete')
     }
 
-    const install = await transport.install(entry.environmentId)
+    let install: RemoteServerUpdateInstallResult
+    try {
+      install = await transport.install(entry.environmentId)
+    } catch (error) {
+      if (entry.support?.installMode !== 'supervised-headless-serve') {
+        throw error
+      }
+      install = await transport.install(entry.environmentId)
+    }
     next = {
       ...next,
       phase: 'restarting',

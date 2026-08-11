@@ -10,14 +10,24 @@ import {
 export const UPDATER_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'updater.getStatus',
-    params: null,
-    handler: (_params, { runtime }) => getRemoteServerUpdaterSnapshot(runtime.getRuntimeId())
+    params: z
+      .object({
+        acknowledgementId: z.string().uuid().optional()
+      })
+      .optional(),
+    handler: (params, { runtime, clientCapabilities, pairedDeviceId }) =>
+      getRemoteServerUpdaterSnapshot(runtime.getRuntimeId(), {
+        ...params,
+        clientCapabilities,
+        requesterId: pairedDeviceId
+      })
   }),
   defineMethod({
     name: 'updater.check',
     params: z.object({
       includePrerelease: z.boolean().optional(),
-      includePerfPrerelease: z.boolean().optional()
+      includePerfPrerelease: z.boolean().optional(),
+      targetVersion: z.string().optional()
     }),
     handler: (params, { runtime }) => checkRemoteServerUpdater(runtime.getRuntimeId(), params)
   }),
@@ -29,6 +39,7 @@ export const UPDATER_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'updater.install',
     params: null,
-    handler: (_params, { runtime }) => installRemoteServerUpdater(runtime.getRuntimeId())
+    handler: (_params, { runtime, clientCapabilities, pairedDeviceId }) =>
+      installRemoteServerUpdater(runtime.getRuntimeId(), clientCapabilities, pairedDeviceId)
   })
 ]

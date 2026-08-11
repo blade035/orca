@@ -172,6 +172,39 @@ describe('remote server update execution', () => {
     expect(progress[2]?.progress).toBe(45)
   })
 
+  it('recovers a lost npm install response with an idempotent retry', async () => {
+    const acknowledgementId = '00000000-0000-4000-8000-000000000000'
+    const snapshots = [
+      availableSnapshot,
+      { ...availableSnapshot, status: { state: 'downloaded', version: '1.5.0' } },
+      { ...availableSnapshot, completedAcknowledgementId: acknowledgementId }
+    ] satisfies RemoteServerUpdaterSnapshot[]
+    const install = vi
+      .fn<RemoteServerUpdateTransport['install']>()
+      .mockRejectedValueOnce(new Error('connection closed after install'))
+      .mockResolvedValue({
+        accepted: true,
+        fromVersion: '1.4.0',
+        targetVersion: '1.5.0',
+        runtimeId: 'runtime-old',
+        acknowledgementId
+      })
+
+    const result = await runRemoteServerUpdate(
+      availableEntry(),
+      transport({
+        install,
+        getUpdaterStatus: async () => snapshots.shift() ?? availableSnapshot,
+        getRuntimeStatus: async () => status('1.5.0', 'runtime-new')
+      }),
+      () => undefined,
+      { timing: { operationTimeoutMs: 10, reconnectTimeoutMs: 10, pollIntervalMs: 1 } }
+    )
+
+    expect(install).toHaveBeenCalledTimes(2)
+    expect(result).toMatchObject({ phase: 'updated', currentVersion: '1.5.0' })
+  })
+
   it('fails when no offered update reaches the requested version', async () => {
     const noUpdate = { ...availableSnapshot, status: { state: 'not-available' } } as const
     const result = await runRemoteServerUpdate(
@@ -203,7 +236,8 @@ describe('remote server update execution', () => {
     )
     expect(check).toHaveBeenCalledWith('server-1', {
       includePrerelease: true,
-      includePerfPrerelease: false
+      includePerfPrerelease: false,
+      targetVersion: '1.5.0-rc.2'
     })
   })
 
@@ -223,7 +257,8 @@ describe('remote server update execution', () => {
     )
     expect(check).toHaveBeenCalledWith('server-1', {
       includePrerelease: false,
-      includePerfPrerelease: false
+      includePerfPrerelease: false,
+      targetVersion: '1.5.0'
     })
   })
 
@@ -243,7 +278,32 @@ describe('remote server update execution', () => {
     )
     expect(check).toHaveBeenCalledWith('server-1', {
       includePrerelease: false,
-      includePerfPrerelease: true
+      includePerfPrerelease: true,
+      targetVersion: '1.5.0'
+    })
+  })
+
+  it('does not let optional channel settings replace the selected exact version', async () => {
+    const check = vi.fn(async () => availableSnapshot)
+    await runRemoteServerUpdate(
+      availableEntry(),
+      transport({
+        check,
+        getUpdaterStatus: async () => ({
+          ...availableSnapshot,
+          status: { state: 'error', message: 'stop after check' }
+        })
+      }),
+      () => undefined,
+      {
+        checkOptions: { targetVersion: '9.9.9' },
+        timing: { operationTimeoutMs: 10, reconnectTimeoutMs: 10, pollIntervalMs: 1 }
+      }
+    )
+    expect(check).toHaveBeenCalledWith('server-1', {
+      includePrerelease: false,
+      includePerfPrerelease: false,
+      targetVersion: '1.5.0'
     })
   })
 

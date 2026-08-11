@@ -1,4 +1,7 @@
-import { REMOTE_SERVER_UPDATE_CAPABILITY } from './remote-server-update'
+import {
+  REMOTE_SERVER_SAFE_INSTALL_ACK_CAPABILITY,
+  REMOTE_SERVER_UPDATE_CAPABILITY
+} from './remote-server-update'
 
 // Why: declares the Orca runtime RPC compatibility contract. Desktop,
 // headless server, CLI, and mobile builds may drift in app version, but
@@ -79,7 +82,10 @@ export const TERMINAL_CREATE_IDEMPOTENCY_RUNTIME_CAPABILITY =
 export const SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY = 'session-tabs.close-intent.v1' as const
 export const AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY =
   'agent-session.session-boundary.v1' as const
-export { REMOTE_SERVER_UPDATE_CAPABILITY } from './remote-server-update'
+export {
+  REMOTE_SERVER_SAFE_INSTALL_ACK_CAPABILITY,
+  REMOTE_SERVER_UPDATE_CAPABILITY
+} from './remote-server-update'
 export const AGENT_SESSION_HOST_AUTHORITY_RUNTIME_CAPABILITY =
   'agent-session.host-authority.v1' as const
 export const AGENT_SESSION_OMP_RESUME_PATH_RUNTIME_CAPABILITY =
@@ -119,6 +125,7 @@ export const RUNTIME_CAPABILITIES = [
   SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY,
   AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY,
   REMOTE_SERVER_UPDATE_CAPABILITY,
+  REMOTE_SERVER_SAFE_INSTALL_ACK_CAPABILITY,
   AGENT_SESSION_HOST_AUTHORITY_RUNTIME_CAPABILITY,
   AGENT_SESSION_OMP_RESUME_PATH_RUNTIME_CAPABILITY,
   FILE_MUTATION_OWNERSHIP_RUNTIME_CAPABILITY,

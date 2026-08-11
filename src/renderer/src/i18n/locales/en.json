@@ -15106,7 +15106,25 @@
         "requestedVersionUnavailable": "The server updater did not offer the requested Orca version.",
         "updateUnavailable": "The server did not report an available update.",
         "downloadIncomplete": "The server update did not finish downloading.",
-        "reconnectTimeout": "The server did not reconnect on the updated version."
+        "reconnectTimeout": "The server did not reconnect on the updated version.",
+        "clientUpgradeRequired": "Update this Orca client before remotely updating the server.",
+        "clientIdentityRequired": "Reconnect or pair this Orca client again before remotely updating the server.",
+        "activationPending": "Another paired client is already starting an update. Wait for it to finish, then check again.",
+        "fullRelaunchRequired": "This update needs a full server relaunch. On the server, press Ctrl+C and rerun the same npx @stablyai/orca@latest or @rc command.",
+        "networkFailed": "The server could not reach the npm registry. Check its network connection and retry.",
+        "registryAuthFailed": "The npm registry rejected the server. Check registry access and authentication.",
+        "diskFull": "The server does not have enough disk space to install this update.",
+        "permissionDenied": "The server cannot write its update files. Check the Orca server profile permissions.",
+        "nativeLoadFailed": "This Orca build is not compatible with the server operating system or native runtime.",
+        "packageInvalid": "The downloaded Orca package failed validation. Retry after a corrected release is published.",
+        "acknowledgementTimeout": "The server did not receive the client update acknowledgement. Retry the update.",
+        "supervisorFailed": "The server could not safely switch versions. Its existing terminals remain available; retry or relaunch the server.",
+        "registryFailed": "The server could not verify the requested Orca version in the npm registry. Retry later.",
+        "installFailed": "The server could not install the downloaded Orca package. Its current version is still running.",
+        "replacementFailed": "The replacement server did not become ready, so Orca restored the previous version. Retry or relaunch the server.",
+        "serverChanged": "The server changed while the update was starting. Check for updates again.",
+        "operationTimeout": "The server update operation timed out. Its current version is still running; retry later.",
+        "failed": "The server update failed safely. Its current version and terminals remain available."
       },
       "webRuntimeSession": {
         "remoteHostDisconnected": "The workspace is not connected to a remote Orca host."

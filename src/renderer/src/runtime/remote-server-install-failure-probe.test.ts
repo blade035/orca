@@ -86,7 +86,7 @@ describe('readRemoteServerInstallFailure', () => {
     ).resolves.toBeNull()
   })
 
-  it('costs no round trip once the replacement runtime answers', async () => {
+  it('reads the originating attempt after a rollback runtime answers', async () => {
     const getUpdaterStatus = vi.fn(async () =>
       snapshot({ state: 'error', message: 'pkexec must be setuid root' })
     )
@@ -98,7 +98,7 @@ describe('readRemoteServerInstallFailure', () => {
         install,
         runtime('runtime-new')
       )
-    ).resolves.toBeNull()
-    expect(getUpdaterStatus).not.toHaveBeenCalled()
+    ).resolves.toBe('pkexec must be setuid root')
+    expect(getUpdaterStatus).toHaveBeenCalledOnce()
   })
 })

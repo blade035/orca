@@ -1,6 +1,7 @@
 import type { UpdateStatus } from './types'
 
 export const REMOTE_SERVER_UPDATE_CAPABILITY = 'updater.remote-control.v1' as const
+export const REMOTE_SERVER_SAFE_INSTALL_ACK_CAPABILITY = 'updater.safe-install-ack.v1' as const
 
 export type RemoteServerUpdateInstallMode =
   | 'interactive'
@@ -20,6 +21,7 @@ export type RemoteServerUpdateSupport = {
 export type RemoteServerUpdaterSnapshot = {
   appVersion: string
   runtimeId: string
+  completedAcknowledgementId?: string
   support: RemoteServerUpdateSupport
   status: UpdateStatus
 }
@@ -29,4 +31,5 @@ export type RemoteServerUpdateInstallResult = {
   fromVersion: string
   targetVersion: string
   runtimeId: string
+  acknowledgementId?: string
 }

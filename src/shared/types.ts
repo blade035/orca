@@ -2445,6 +2445,8 @@ export type ChangelogData = {
 export type UpdateCheckOptions = {
   includePrerelease?: boolean
   includePerfPrerelease?: boolean
+  /** Optional exact remote-host package version; older hosts safely ignore it. */
+  targetVersion?: string
   localBuild?: boolean
   /** Dev channel switching; `targetTag` pins an exact build, including older ones. */
   channel?: ReleaseChannel

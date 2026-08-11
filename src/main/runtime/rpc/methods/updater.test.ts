@@ -39,11 +39,19 @@ describe('runtime updater RPC methods', () => {
   })
 
   it('exposes status and each update transition', async () => {
-    const context = { runtime } as never
+    const context = {
+      runtime,
+      clientCapabilities: ['updater.safe-install-ack.v1'],
+      pairedDeviceId: 'device-a'
+    } as never
     expect(await handler(UPDATER_METHODS, 'updater.getStatus')(undefined, context)).toBe(snapshot)
     expect(
       await handler(UPDATER_METHODS, 'updater.check')(
-        { includePrerelease: false, includePerfPrerelease: true },
+        {
+          includePrerelease: false,
+          includePerfPrerelease: true,
+          targetVersion: '1.5.1'
+        },
         context
       )
     ).toBe(snapshot)
@@ -54,18 +62,30 @@ describe('runtime updater RPC methods', () => {
     })
     expect(check).toHaveBeenCalledWith('runtime-rpc', {
       includePrerelease: false,
-      includePerfPrerelease: true
+      includePerfPrerelease: true,
+      targetVersion: '1.5.1'
     })
+    expect(getSnapshot).toHaveBeenCalledWith('runtime-rpc', {
+      clientCapabilities: ['updater.safe-install-ack.v1'],
+      requesterId: 'device-a'
+    })
+    expect(install).toHaveBeenCalledWith('runtime-rpc', ['updater.safe-install-ack.v1'], 'device-a')
   })
 
   it('enriches status.get without changing the runtime status source', async () => {
-    const result = await handler(STATUS_METHODS, 'status.get')(undefined, { runtime } as never)
+    const result = await handler(STATUS_METHODS, 'status.get')(undefined, {
+      runtime,
+      clientCapabilities: ['updater.safe-install-ack.v1']
+    } as never)
     expect(result).toEqual({
       runtimeId: 'runtime-rpc',
       liveTabCount: 2,
       liveLeafCount: 3,
       appVersion: '1.5.0',
       remoteUpdateSupport: snapshot.support
+    })
+    expect(getSnapshot).toHaveBeenCalledWith('runtime-rpc', {
+      clientCapabilities: ['updater.safe-install-ack.v1']
     })
   })
 })

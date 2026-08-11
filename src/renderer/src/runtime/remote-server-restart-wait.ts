@@ -10,7 +10,8 @@ type RestartWaitTransport = {
   getRuntimeStatus: (environmentId: string, timeoutMs?: number) => Promise<RuntimeStatus>
   getUpdaterStatus: (
     environmentId: string,
-    timeoutMs?: number
+    timeoutMs?: number,
+    acknowledgementId?: string
   ) => Promise<RemoteServerUpdaterSnapshot>
   wait: (milliseconds: number) => Promise<void>
   now?: () => number
@@ -44,18 +45,39 @@ export async function waitForReplacementRuntime(
     // Why: an RPC allowed to outlive the deadline drags the whole wait past the budget the caller set.
     const rpcTimeoutMs = Math.min(RESTART_WAIT_RPC_TIMEOUT_MS, deadline - now())
     let installFailure: string | null = null
+    let updaterSnapshot: RemoteServerUpdaterSnapshot | null = null
     try {
-      const status = await transport.getRuntimeStatus(environmentId, rpcTimeoutMs)
+      if (install.acknowledgementId) {
+        updaterSnapshot = await transport.getUpdaterStatus(
+          environmentId,
+          rpcTimeoutMs,
+          install.acknowledgementId
+        )
+        if (
+          updaterSnapshot.runtimeId === install.runtimeId &&
+          updaterSnapshot.status.state === 'error'
+        ) {
+          installFailure = updaterSnapshot.status.message
+        }
+      }
+      const runtimeTimeoutMs = Math.min(RESTART_WAIT_RPC_TIMEOUT_MS, deadline - now())
+      if (runtimeTimeoutMs <= 0) {
+        break
+      }
+      const status = await transport.getRuntimeStatus(environmentId, runtimeTimeoutMs)
       const version = status.appVersion?.trim() ?? ''
       const reachedTarget = hasReachedAppVersion(version, install.targetVersion)
-      if (status.runtimeId !== install.runtimeId && reachedTarget) {
+      const committed =
+        !install.acknowledgementId ||
+        updaterSnapshot?.completedAcknowledgementId === install.acknowledgementId
+      if (status.runtimeId !== install.runtimeId && reachedTarget && committed) {
         return status
       }
       // Why: the status RPC already spent part of rpcTimeoutMs, so the probe re-reads what is left
       // rather than starting a second full budget of its own.
       const probeTimeoutMs = Math.min(RESTART_WAIT_RPC_TIMEOUT_MS, deadline - now())
-      installFailure =
-        probed && probeTimeoutMs > 0
+      installFailure ??=
+        !install.acknowledgementId && probed && probeTimeoutMs > 0
           ? await readRemoteServerInstallFailure(
               environmentId,
               transport,

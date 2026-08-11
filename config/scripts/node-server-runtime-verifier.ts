@@ -9,6 +9,7 @@ import { verifyInstalledCliProfileBehavior } from './node-server-installed-cli-o
 import { stopNodeServerVerifierDaemons } from './node-server-verifier-daemon-cleanup'
 import { initializeNodeServerVerifierGitWorkspace } from './node-server-verifier-git-fixture'
 import { isSameExistingHostPath } from './node-server-verifier-host-path'
+import { verifyPackagedNpmSafeUpdate } from './node-server-safe-update-oracle'
 import {
   startNodeServerVerifierProcess,
   stopNodeServerVerifierProcess,
@@ -49,26 +50,40 @@ async function main(): Promise<void> {
       terminalHandle: terminal.handle,
       temporaryRoot: ownedRoot
     })
+    assert(terminal.ptyId, 'created terminal did not expose its daemon identity')
+    const updated = await verifyPackagedNpmSafeUpdate({
+      cliPath,
+      dataPath,
+      currentVersion: expectedVersion,
+      pairing,
+      server: first.child,
+      serverStderr: first.stderr,
+      terminal: {
+        handle: terminal.handle,
+        ptyId: terminal.ptyId,
+        workspaceSelector: terminal.workspaceSelector
+      }
+    })
     await stopNodeServerVerifierProcess(first)
     activeServer = null
 
     const second = await startNodeServerVerifierProcess({ cliPath, dataPath })
     activeServer = second
-    assert(
-      second.ready.runtimeId !== first.ready.runtimeId,
-      'runtime process identity did not rotate'
-    )
-    const reconnectedPairing = { ...pairing, endpoint: second.ready.boundEndpoint }
-    await verifyStatus(reconnectedPairing, second.ready.runtimeId, expectedVersion)
+    assert(second.ready.runtimeId !== updated.runtimeId, 'runtime process identity did not rotate')
+    const reconnectedPairing = decodePairingOffer(second.ready.pairing.url)
+    await verifyStatus(reconnectedPairing, second.ready.runtimeId, updated.version)
     const restored = await call<{ terminals: { handle: string; ptyId?: string }[] }>(
       reconnectedPairing,
       'terminal.list',
       { worktree: terminal.workspaceSelector }
     )
-    assert(terminal.ptyId, 'created terminal did not expose its daemon identity')
     const reattached = restored.terminals.find((candidate) => candidate.ptyId === terminal.ptyId)
     assert(reattached, 'terminal daemon session was not adopted')
-    await waitForTerminalMarker(reconnectedPairing, reattached.handle, terminal.marker)
+    await sendTerminalMarker(
+      reconnectedPairing,
+      reattached.handle,
+      `orca-supervisor-relaunch-${Date.now()}`
+    )
     await stopNodeServerVerifierProcess(second)
     activeServer = null
     process.stdout.write('Node server runtime verification passed\n')
@@ -113,6 +128,11 @@ async function verifyStatus(
   const status = await call<RuntimeStatus>(pairing, 'status.get')
   assert(status.runtimeId === expectedRuntimeId, 'status returned the wrong runtime')
   assert(status.appVersion === expectedAppVersion, 'status returned the wrong package version')
+  assert(
+    status.remoteUpdateSupport?.automatic === true &&
+      status.remoteUpdateSupport.installMode === 'supervised-headless-serve',
+    'installed npm host did not advertise supervised remote updates'
+  )
   assert(status.desktopWindowStatus === 'blocked', 'desktop status is not blocked')
   const capabilities = status.capabilities ?? []
   for (const capability of [
@@ -183,17 +203,30 @@ async function verifyFolderWorkspaceAndTerminal(pairing: PairingOffer): Promise<
     'terminal.create',
     {
       worktree: workspaceSelector,
-      command: `node -p "'${marker}:'+process.env.TERM_PROGRAM_VERSION"`
+      command: 'node -e "process.stdin.pipe(process.stdout)"'
     }
   )
-  const versionedMarker = `${marker}:${expectedVersion}`
-  await waitForTerminalMarker(pairing, created.terminal.handle, versionedMarker)
+  await sendTerminalMarker(pairing, created.terminal.handle, marker)
   return {
     handle: created.terminal.handle,
-    marker: versionedMarker,
+    marker,
     ptyId: created.terminal.ptyId,
     workspaceSelector
   }
+}
+
+async function sendTerminalMarker(
+  pairing: PairingOffer,
+  handle: string,
+  marker: string
+): Promise<void> {
+  const result = await call<{ send: { accepted: boolean; bytesWritten: number } }>(
+    pairing,
+    'terminal.send',
+    { terminal: handle, text: marker, enter: true }
+  )
+  assert(result.send.accepted && result.send.bytesWritten > 0, 'terminal input was refused')
+  await waitForTerminalMarker(pairing, handle, marker)
 }
 
 async function waitForTerminalMarker(

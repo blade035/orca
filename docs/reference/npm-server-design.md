@@ -221,6 +221,89 @@ closed when a failed mutation cannot be confirmed settled.
 Every listener, socket, timer, and signal handler installed by the Node composition root has a
 matching joined cleanup path before the process exits.
 
+## Safe npm server updates
+
+The npm executable is a supervisor, not the long-lived host itself:
+
+```text
+npx / orca-ide supervisor
+  ├─ restartable versioned host worker
+  └─ separately owned terminal daemon and PTYs
+```
+
+The supervisor starts the host worker over an IPC channel and waits for readiness containing the
+exact package version and runtime ID. Stopping or replacing a worker uses the normal joined host
+shutdown, which disconnects from the terminal daemon without killing daemon-owned terminals.
+Restarting the terminal daemon is never part of an npm package update.
+
+The existing remote-server update RPC and client UI remain the only remote update contract. A new
+client may add an optional exact target version to the existing check request; older hosts ignore
+it and newer hosts must continue to support requests where it is absent. No terminal-stream opcode
+or required response field is added.
+
+An automatic npm update follows this transaction:
+
+1. Resolve an exact published `@stablyai/orca` version. Never activate a dist-tag or range.
+2. Install it into a temporary directory beneath the server profile's runtime directory.
+3. Run the candidate's side-effect-free preflight with the same Node executable. Preflight verifies
+   package identity, exact version, required files, external dependencies, and native module load.
+4. Write an install-complete sentinel and atomically rename the candidate into its immutable
+   version directory.
+5. Return the accepted install result with an unguessable receipt bound to the authenticated paired
+   device. The same device may retry a lost install response and recover the same receipt; another
+   device cannot retrieve or acknowledge it. The client echoes the receipt on a later authenticated
+   status request, and requests without it cannot trigger activation.
+6. Persist a pending handoff before stopping the current worker.
+7. Start the candidate privately and require an exact-version prepared message while its RPC
+   listener remains closed.
+8. Atomically select that immutable version, then grant the prepared candidate permission to open
+   RPC and require its applied acknowledgement.
+9. Require public readiness for the exact candidate version and runtime ID.
+10. Require an applied success acknowledgement for the same receipt before the paired client can
+    display the update as complete.
+11. On any failure, restore the previous durable selection, restart the previous worker, and expose
+    a redacted originating failure so the client does not wait for a generic timeout.
+
+Only one check, download, or activation may run per profile. A repeated request for an already
+complete immutable version reuses it after preflight. Incomplete staging directories are removed;
+an existing complete version is never overwritten. Paths received over IPC are not trusted: the
+supervisor derives candidate paths from the profile and exact version and verifies their sentinel.
+
+The foreground local recovery path stays intentionally unsurprising:
+
+```bash
+# Stop only the npm supervisor and host; daemon-backed terminals remain alive.
+Ctrl+C
+npx @stablyai/orca@latest
+```
+
+Remote update from a connected client is the primary no-shell path. The server checks, stages,
+preflights, restarts, and reconnects while the client displays the existing checking, downloading,
+restarting, success, or actionable failure states. A foreground supervisor crash cannot promise
+availability, but relaunching the command adopts the last successfully selected immutable runtime
+and reconnects to the durable terminal daemon.
+
+Worker shutdown uses a joined supervisor-to-worker IPC request on macOS, Linux, and Windows, with a
+bounded OS-level kill only as a failure fallback. The install-response acknowledgement replaces a
+timing delay: replacement cannot begin until a client has received the result and echoes its unique
+receipt on a later authenticated status request. Other clients cannot trigger the handoff by
+checking status, and each remote RPC may use a fresh WebSocket connection.
+
+Remote updates replace the versioned host worker but intentionally do not replace the already
+running supervisor executable. Worker-compatible releases update remotely. A release that changes
+the supervisor protocol requires the documented local `Ctrl+C` plus `npx` relaunch; candidate
+preflight rejects an incompatible protocol before the active worker is stopped.
+
+The first release does not install a system service or mutate a global npm installation. A future
+service command may supervise the same versioned-worker protocol; it must not introduce a second
+update backend or move PTY ownership into the host worker.
+
+Update acceptance requires two independent continuity signals: the terminal daemon PID and PTY
+identity remain unchanged, and a marker written after the replacement becomes ready is observed on
+the paired client. Reconnect alone is insufficient. Tests also cover failed preflight, candidate
+exit before readiness, rollback, duplicate requests, signal races, stale IPC, and a newer client
+against an older manually updated server.
+
 ## Desktop coexistence and handoff
 
 The initial npm host and desktop app use separate default data directories. They can run on the
@@ -281,6 +364,16 @@ the terminal marker.
 
 ## Rollout
 
+Registry bootstrap is the only external prerequisite. The `@stablyai` npm organization must own
+`@stablyai/orca`, and that package must trust `.github/workflows/release-cut.yml` as an npm Trusted
+Publisher. Trusted publishing uses GitHub OIDC and requires no long-lived `NPM_TOKEN` secret. If npm
+does not allow configuring a trusted publisher before the package exists, publish the first exact
+`rc` tarball once with an organization-scoped granular token and required 2FA, configure the trusted
+publisher immediately, then remove the bootstrap token. Release CI verifies the existing registry
+SHA-1 against its locally packed tarball and verifies or repairs the expected dist-tag before
+treating a retry as complete. Only a plain `X.Y.Z-rc.N` advances `rc`; suffixed prereleases use the
+non-user-facing `build` tag.
+
 1. Publish an immutable candidate with an explicit non-default tag, for example
    `npm publish --tag rc`; never let the first publication implicitly claim `latest`.
 2. Verify the registry dist-tags, install `@rc` on the supported package matrix, and retain the
@@ -328,6 +421,11 @@ the terminal marker.
       signals and startup errors.
 - [x] Cancel startup before signal teardown and prove pre-readiness SIGTERM prints no credential,
       exits cleanly, and leaves the profile reusable.
+- [x] Run the npm host as a supervised worker while leaving the terminal daemon independent.
+- [x] Stage exact immutable npm versions, preflight them, and select them atomically.
+- [x] Roll back to the previous worker when candidate readiness fails.
+- [x] Persist handoff failure state so a reconnected client receives the exact failure.
+- [x] Wire the npm backend into the existing remote-server updater RPC and UI.
 
 ### CLI and networking
 
@@ -388,6 +486,12 @@ the terminal marker.
 - [x] Prove both installed bins route zero-argument, `serve`, help/version, and non-server control
       commands exactly once without eagerly initializing the wrong runtime.
 - [x] Record installed CLI startup/readiness timing and subprocess counts on the final package.
+- [x] Prove exact-version replacement with unchanged daemon PID and PTY identity.
+- [x] Prove terminal output and input after replacement with pre/post-handoff markers.
+- [x] Prove failed preflight never stops the current worker.
+- [x] Prove candidate failure rolls back and reports an actionable error without a reconnect timeout.
+- [x] Prove duplicate, stale, and concurrent activation requests cannot replace the selected worker.
+- [ ] Run the update oracle against locally packed old/new tarballs and in the Linux Docker matrix.
 
 ### Accepted platform follow-ups
 
@@ -411,14 +515,14 @@ the terminal marker.
 
 The installed-tarball history covers its inventory, executable, license, dependency, web-client,
 real E2EE, workspace, Git, PTY, shutdown, and restart-continuity oracle on macOS; Ubuntu 20.04,
-22.04, and 24.04 amd64; and Ubuntu 20.04 arm64. The final package was rerun on macOS arm64 and all
-three amd64 Ubuntu versions. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active
-native PTY against glibc 2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
+22.04, and 24.04 amd64; and Ubuntu 20.04 arm64. Earlier package candidates were rerun on all three
+amd64 Ubuntu versions. The Ubuntu 20.04 runs used stock Git 2.25.1 and verified the active native
+PTY against glibc 2.31 without a compiler, Electron, Chromium, Xvfb, or FUSE installed.
 
-The current focused selector passed 554 tests across 31 server, RPC, cross-version wire,
-onboarding, browserless composition, automation, precheck, profile-lock, readiness,
+The current combined selector passed 650 tests across 48 safe-update, server, RPC, cross-version
+wire, onboarding, browserless composition, automation, precheck, profile-lock, readiness,
 installed-process, AgentHook, and shutdown files. Four workflow and release-contract files passed
-62 tests with one platform-specific skip:
+66 tests with one platform-specific skip:
 
 ```bash
 pnpm exec vitest run --config config/vitest.config.ts \
@@ -452,7 +556,24 @@ pnpm exec vitest run --config config/vitest.config.ts \
   src/renderer/src/components/settings/NodeServerSetupCallout.test.tsx \
   src/renderer/src/components/settings/RuntimeHostAccessForm.test.tsx \
   src/renderer/src/components/sidebar/AddRemoteHostFields.test.tsx \
-  tests/e2e/cross-version-wire/cross-version-terminal-wire.unit.test.ts
+  tests/e2e/cross-version-wire/cross-version-terminal-wire.unit.test.ts \
+  src/node-server/npm-supervisor-worker-transition.test.ts \
+  src/node-server/npm-supervised-worker.test.ts \
+  src/node-server/npm-pinned-runtime.test.ts \
+  src/node-server/npm-server-updater.test.ts \
+  src/node-server/npm-serve-supervisor.test.ts \
+  src/node-server/npm-supervisor-protocol.test.ts \
+  src/node-server/npm-supervisor-state.test.ts \
+  src/node-server/npm-process-runner.test.ts \
+  src/node-server/npm-update-error-classification.test.ts \
+  src/node-server/npm-runtime-version.test.ts \
+  src/renderer/src/runtime/remote-server-install-failure-probe.test.ts \
+  src/renderer/src/runtime/remote-server-update-errors.test.ts \
+  src/renderer/src/runtime/remote-server-restart-wait.test.ts \
+  src/renderer/src/runtime/remote-server-update-coordinator.test.ts \
+  src/main/runtime/remote-server-updater.test.ts \
+  src/main/runtime/rpc/methods/updater.test.ts \
+  config/scripts/node-server-package-workflow-contract.test.mjs
 pnpm exec vitest run --config config/vitest.config.ts \
   config/scripts/pr-workflow-parallelism.test.mjs \
   config/scripts/node-server-package-workflow-contract.test.mjs \
@@ -460,11 +581,17 @@ pnpm exec vitest run --config config/vitest.config.ts \
   config/scripts/package-electron-runtime-contract.test.mjs
 ```
 
-The current macOS arm64 installed-tarball oracle passed with 18,206,565 packed bytes and 55,905,664
+The current macOS arm64 installed-tarball oracle passed with 18,220,887 packed bytes and 55,957,304
 unpacked bytes. Its POSIX startup oracle also sent SIGTERM before readiness, observed no credential
-output, and restarted the same profile successfully. Ubuntu 20.04, 22.04, and 24.04 amd64 passed
-the same installed runtime oracle in Docker; Ubuntu 20.04 also verified the glibc 2.31 and
-`GLIBCXX_3.4.28` floors.
+output, and restarted the same profile successfully. The final Ubuntu 20.04 amd64 package passed
+the same safe-update journey in Docker and verified the glibc 2.31 and `GLIBCXX_3.4.28` floors.
+Earlier package candidates also passed Ubuntu 22.04 and 24.04 amd64 plus Ubuntu 20.04 arm64.
+
+The physical Windows x64 safe-update oracle passed in 51.227 seconds with 18,250,120 packed bytes
+and 55,957,163 unpacked bytes. It covered successful exact activation, rejected preflight without
+stopping the healthy worker, failed-candidate rollback, unchanged daemon PID/file/launch nonce,
+PTY reattachment and post-update terminal I/O, selected-version relaunch, and zero residual test
+processes.
 
 The final cancellation lifecycle gate passed 1,463 tests across eleven deterministic files with one
 unrelated platform-specific skip in 10.29 seconds. It covers commit-point reconciliation,

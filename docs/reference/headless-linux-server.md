@@ -40,6 +40,33 @@ restarts. Stop the foreground server with `Ctrl+C`.
 The package remains on the non-default `rc` tag while its platform matrix is collected. Stable
 onboarding will switch these commands to `@latest` only after that exact candidate is promoted.
 
+### Update the browserless Node server
+
+A connected Orca desktop client can update this server from the existing **Remote Orca Servers**
+update screen. The npm supervisor installs and preflights the client's exact Orca version, restarts
+only the host worker, and rolls back if the replacement does not become ready. The terminal daemon
+is separate, so live terminal PTYs survive the host restart and clients reconnect without pairing
+again.
+
+The local fallback is to stop and relaunch the foreground command:
+
+```bash
+# Ctrl+C, then during the release-candidate period:
+npx @stablyai/orca@rc
+
+# After stable promotion:
+npx @stablyai/orca@latest
+```
+
+`Ctrl+C` stops the supervisor and host worker, not daemon-owned terminals. The next launch reuses
+the server profile, pairing identity, selected immutable runtime, and terminal daemon. The initial
+npm release does not install a system service or rewrite a global npm installation.
+
+Most releases update remotely by replacing only the host worker. If an update changes the npm
+supervisor protocol, Orca rejects it before stopping the current host and asks for the local
+`Ctrl+C` plus `npx` relaunch above; this updates the foreground supervisor while retaining the same
+profile and daemon-owned terminals.
+
 For the package architecture, security policy, capability behavior, and validation topology, see
 the [npm server design](./npm-server-design.md).
 
@@ -356,12 +383,11 @@ If you later install the desktop CLI from Orca settings, use that CLI for normal
 shell workflows. Keep the AppImage path in systemd so service restarts do not
 depend on an interactive shell profile.
 
-## Upgrade
+## Upgrade the desktop/AppImage server
 
-`orca serve` never updates itself. In headless mode Orca wires up no auto-updater
-at all — the built-in updater only runs in the desktop GUI, and no paired mobile
-or web client can trigger it remotely. Upgrading is always a deliberate step:
-replace the AppImage and restart the service.
+This section applies to the Electron/AppImage path, not the browserless npm package above.
+An unsupervised AppImage `orca serve` cannot install itself remotely. Upgrading it is a deliberate
+step: replace the AppImage and restart the service.
 
 Two facts make this safe and predictable:
 
@@ -873,7 +899,7 @@ refuse to run there and print the command to run on the machine you want.
 - Clients cannot connect: make sure `--pairing-address` is an address reachable
   from the client, and make sure firewalls allow the selected `--port`.
 - Journal shows `Another Orca instance is already running for this userData
-  profile` and the unit exits `3`: another process already owns the profile, so
+profile` and the unit exits `3`: another process already owns the profile, so
   `RestartPreventExitStatus=3` leaves the unit `failed` on purpose. Find the
   owner with `systemctl status orca-serve` and `pgrep -af orca`. Stop it (or
   keep it and leave the unit down), then run

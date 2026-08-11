@@ -24,6 +24,7 @@ import {
 import type { RuntimeStatus } from './runtime-types'
 import {
   AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY,
+  REMOTE_SERVER_SAFE_INSTALL_ACK_CAPABILITY,
   SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY
 } from './protocol-version'
 // Re-export so existing value importers of `RemoteRuntimeClientError` are
@@ -139,7 +140,8 @@ async function sendRemoteRuntimeRequestOnSocket<TResult>(
     deviceToken: pairing.deviceToken,
     clientCapabilities: [
       SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY,
-      AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY
+      AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY,
+      REMOTE_SERVER_SAFE_INSTALL_ACK_CAPABILITY
     ]
   })
   const pendingRequest = {
@@ -511,7 +513,8 @@ export async function subscribeRemoteRuntimeRequest<TResult>(
     deviceToken: pairing.deviceToken,
     clientCapabilities: [
       SESSION_TAB_CLOSE_INTENT_RUNTIME_CAPABILITY,
-      AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY
+      AGENT_SESSION_BOUNDARY_RUNTIME_CAPABILITY,
+      REMOTE_SERVER_SAFE_INSTALL_ACK_CAPABILITY
     ]
   })
   return await new Promise((resolve, reject) => {

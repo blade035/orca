@@ -11,6 +11,136 @@
   },
   "gates": [
     {
+      "id": "runtime.npm-supervised-update-terminal-continuity",
+      "title": "npm host updates preserve daemon-owned terminal sessions",
+      "maturity": "experimental",
+      "protection": "partial",
+      "owner": "daemon-terminal",
+      "layer": "node-server-lifecycle",
+      "surfaces": [
+        "browserless npm host replacement",
+        "remote updater RPC",
+        "terminal daemon and PTY adoption",
+        "failed-candidate rollback"
+      ],
+      "platforms": ["macos", "linux", "windows"],
+      "providers": ["local-daemon", "paired-runtime-host"],
+      "coveredPlatforms": ["macos", "linux", "windows"],
+      "coveredProviders": ["local-daemon", "paired-runtime-host"],
+      "coverageNotes": "The installed-package verifier uses a real encrypted paired-runtime transport, live echo PTY, synthetic exact-version packages, supervisor worker replacement, rollback, and supervisor relaunch on macOS arm64, Ubuntu 20.04 amd64, and physical Windows x64.",
+      "motivatingLinks": ["https://github.com/stablyai/orca/pull/13452"],
+      "invariant": "Replacing an npm host worker must preserve the exact terminal daemon process and PTY, accept terminal input and publish its output after reconnection, durably select only an exact ready candidate, and restore the prior worker with the originating actionable failure when candidate readiness fails.",
+      "oracle": "Start the installed npm supervisor with an isolated profile, pair over the real encrypted WebSocket transport, create a live echo PTY, and record daemon PID, protocol file, launch nonce, PTY ID, and runtime ID. Preseed a synthetic immutable exact candidate, drive updater check, download, and receipt-gated install, then require private preparation, durable selection before public readiness, a matching completed receipt, rotated runtime identity, unchanged daemon and PTY identities, and a unique post-update input/output marker. Reject a candidate whose manifest contradicts its pinned target without stopping the healthy worker. Then force a candidate to exit after preflight; require prior-version rollback, the originating updater error without a reconnect timeout, unchanged daemon and PTY identities, and another live marker. Finally restart the supervisor and require adoption of the selected exact candidate with the same PTY still live.",
+      "commands": [
+        "pnpm run build:node-server && pnpm run verify:node-server-package",
+        "pnpm run verify:node-server-docker -- --ubuntu 20.04",
+        "pnpm run tc && pnpm run build:node-server && pnpm run verify:node-server-package",
+        "pnpm exec vitest run --config config/vitest.config.ts src/node-server/npm-supervisor-protocol.test.ts src/node-server/npm-supervisor-state.test.ts src/node-server/npm-supervisor-worker-transition.test.ts src/node-server/npm-server-updater.test.ts src/node-server/npm-pinned-runtime.test.ts src/node-server/npm-serve-supervisor.test.ts src/node-server/npm-supervised-worker.test.ts src/node-server/npm-process-runner.test.ts src/node-server/npm-runtime-version.test.ts src/node-server/npm-update-error-classification.test.ts src/renderer/src/runtime/remote-server-restart-wait.test.ts src/renderer/src/runtime/remote-server-update-coordinator.test.ts"
+      ],
+      "testFiles": [
+        "src/node-server/npm-serve-supervisor.test.ts",
+        "src/node-server/npm-supervisor-worker-transition.test.ts",
+        "src/node-server/npm-server-updater.test.ts",
+        "src/node-server/npm-supervised-worker.test.ts"
+      ],
+      "assertionRefs": [
+        {
+          "file": "src/node-server/npm-supervisor-worker-transition.test.ts",
+          "assertions": [
+            "clears a broken pinned selection and starts the launcher fallback",
+            "does not mutate state when a duplicate worker reports profile ownership",
+            "stops a rollback worker when its readiness fails",
+            "repairs transient rollback persistence after the previous worker is ready",
+            "rejects a candidate that exits while its selection is committing"
+          ]
+        },
+        {
+          "file": "src/node-server/npm-serve-supervisor.test.ts",
+          "assertions": [
+            "commits durably before publication and reports success only after readiness",
+            "rolls back and preserves the originating failure when a candidate is not ready",
+            "keeps the healthy worker running when pending state cannot be written",
+            "reports failed activation preflight without stopping the healthy worker",
+            "restores the previous worker when durable candidate selection fails",
+            "ignores stale and duplicate activation messages"
+          ]
+        },
+        {
+          "file": "src/node-server/npm-server-updater.test.ts",
+          "assertions": [
+            "resolves an exact target, stages it, and requests supervised activation",
+            "reuses an already pinned exact target without querying the registry",
+            "does not activate when candidate staging or preflight fails",
+            "returns a lost install receipt only to its paired device",
+            "publishes only the matching committed receipt"
+          ]
+        },
+        {
+          "file": "src/node-server/npm-supervised-worker.test.ts",
+          "assertions": [
+            "shares protocol mismatch failure without an unhandled phase rejection",
+            "requests joined shutdown over IPC before using an OS signal",
+            "escalates a worker that does not stop and clears the timeout"
+          ]
+        }
+      ],
+      "evidenceRuns": [
+        {
+          "date": "2026-08-10",
+          "runner": "local",
+          "platform": "macos",
+          "result": "passed",
+          "command": "pnpm run build:node-server && pnpm run verify:node-server-package",
+          "durationSeconds": 24,
+          "summary": "The 18,220,887-byte installed package completed exact-version replacement, rejected preflight without stopping the healthy worker, failed-candidate rollback, durable selected-version relaunch, unchanged daemon and PTY identities, and live terminal markers after every transition."
+        },
+        {
+          "date": "2026-08-10",
+          "runner": "local",
+          "platform": "linux",
+          "result": "passed",
+          "command": "pnpm run verify:node-server-docker -- --ubuntu 20.04",
+          "durationSeconds": 32,
+          "summary": "The same installed safe-update journey passed on Ubuntu 20.04 amd64 while enforcing glibc 2.31 and GLIBCXX_3.4.28 compatibility without a compiler or Electron stack."
+        },
+        {
+          "date": "2026-08-10",
+          "runner": "manual",
+          "platform": "windows",
+          "result": "passed",
+          "command": "pnpm run tc && pnpm run build:node-server && pnpm run verify:node-server-package",
+          "durationSeconds": 51,
+          "summary": "The 18,250,120-byte Windows x64 package passed exact activation, rejected preflight, failed-candidate rollback, daemon and PTY continuity, post-update terminal I/O, selected-version relaunch, and zero-process cleanup."
+        }
+      ],
+      "runtimeBudget": {
+        "p95Seconds": 240,
+        "scope": "installed package build, native install, encrypted runtime journey, two worker handoffs, and supervisor relaunch"
+      },
+      "flakeHistory": {
+        "status": "not-started",
+        "evidence": "The oracle uses readiness events and bounded state polling rather than sleep-based lifecycle assertions; CI soak history has not started."
+      },
+      "redGreenEvidence": {
+        "status": "partial",
+        "evidence": "The candidate passes the packaged oracle. The pre-supervisor implementation cannot advertise or execute a supervised npm update, while individual lifecycle faults are pinned by deterministic unit tests; a byte-identical full baseline/revert artifact is not retained."
+      },
+      "performanceBudget": {
+        "required": true,
+        "evidence": "Updates add no terminal hot-path hop, PTY polling, terminal listing fanout, or daemon restart. One application-level status acknowledgement from the installing connection gates a user-initiated worker replacement; steady-state terminal input and output continue through the existing daemon path."
+      },
+      "promotionCriteria": [
+        "Collect 100 consecutive focused CI passes or 14 days of soak history.",
+        "Keep the installed-package oracle green on macOS arm64, Ubuntu 20.04 amd64, and physical Windows x64.",
+        "Keep exact candidate, rollback failure, daemon identity, PTY identity, post-transition I/O, and selected-version relaunch assertions green."
+      ],
+      "knownGaps": [
+        "Windows arm64 safe-update evidence is not yet recorded.",
+        "A retained byte-identical full baseline/revert package artifact is not recorded."
+      ],
+      "demotionRule": "Demote if an update restarts the daemon, changes PTY identity, loses post-replacement input or output, selects a non-exact or unready candidate, strands the profile after failure, or waits for the generic reconnect timeout instead of reporting rollback failure."
+    },
+    {
       "id": "automation.headless-precheck-shutdown",
       "title": "Headless shutdown cancels local and SSH automation prechecks",
       "maturity": "experimental",
@@ -199,9 +329,7 @@
         },
         {
           "file": "src/relay/fs-handler-mutation-settlement.test.ts",
-          "assertions": [
-            "registers before write preflight and retains settlement until release"
-          ]
+          "assertions": ["registers before write preflight and retains settlement until release"]
         },
         {
           "file": "src/main/providers/ssh-git-provider.test.ts",
