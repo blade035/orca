@@ -12,7 +12,7 @@ export function createRelayAiVaultFilesystemProvider(): RemoteSessionFilesystemP
         isSymlink: entry.isSymbolicLink()
       }))
     },
-    readFile: readRelayFileContent,
+    readFile: (filePath, options) => readRelayFileContent(filePath, options?.signal),
     async stat(filePath) {
       const stats = await lstat(filePath)
       return {
