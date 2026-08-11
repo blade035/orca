@@ -6,6 +6,7 @@ import {
   readFitClientSize,
   safeFit
 } from './pane-fit'
+import { releaseRenderPauseLatch } from './terminal-render-pause-release'
 import { requestStablePaneFit } from './pane-fit-resize-observer'
 import { clearPaneFitContinuationRetry } from './pane-fit-continuation-retry'
 import { resumePendingFitScrollRestoreAfterFit } from './pane-scroll'
@@ -62,6 +63,12 @@ function releaseMeasurableFitContinuations(pane: ManagedPane): void {
 //    mismatch refits but a transient metric wobble does not reflow;
 //  - grid already correct → leave it alone.
 export function fitRevealedPane(pane: ManagedPane): void {
+  // Why before the fit, not after: while the render service is latched, every
+  // resize below parks the renderer half and composites the pre-hide backing
+  // store into the new box. Measurable only — a hidden pane must stay paused.
+  if (canMeasurePaneForFit(pane)) {
+    releaseRenderPauseLatch(pane.terminal)
+  }
   // Why first: the checks below can both say "nothing to do" and return without
   // fitting, stranding metric options parked while the pane was unmeasurable.
   const flushed = flushDeferredPaneMetricOptionsIfMeasurable(pane)

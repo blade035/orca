@@ -42,6 +42,30 @@ function getRenderService(terminal: unknown): PausableRenderService | null {
 }
 
 /**
+ * Clears the pause latch only — no repaint, no other state touched.
+ *
+ * Why: `RenderService.handleResize` branches purely on `_isPaused`. Paused, it
+ * parks the renderer resize in `_pausedResizeTask`, so a reveal fit resizes the
+ * css box while the canvas keeps compositing its pre-hide backing store — the
+ * blurry reveal. Unlatched first, the same fit's `terminal.resize` takes the
+ * inline branch: backing store, css box and dimensions are all written inside
+ * xterm's own resize path, and xterm's own `_fullRefresh()` follows it.
+ *
+ * Deliberately leaves `_needsFullRefresh` armed and drives no repaint of its
+ * own: xterm's observer recovery is what repaints if this frame doesn't, and
+ * owning the repaint here is what made the previous attempt paint nothing.
+ * Returns true when it cleared the latch.
+ */
+export function releaseRenderPauseLatch(terminal: unknown): boolean {
+  const service = getRenderService(terminal)
+  if (!service || service._isPaused !== true) {
+    return false
+  }
+  service._isPaused = false
+  return true
+}
+
+/**
  * If xterm's renderer is paused (observer hasn't caught up to the reveal),
  * clear the pause latch and force a synchronous full-viewport repaint.
  * Returns true when it drove the render, false when it left the terminal
