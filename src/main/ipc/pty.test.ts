@@ -523,6 +523,7 @@ describe('registerPtyHandlers', () => {
       'ssh-b',
       'ssh-expired-runtime',
       'ssh-fresh-fail',
+      'ssh-split-rejection',
       'ssh-reattach-1',
       'ssh-reattach-fail',
       'ssh-reattach-ok',
@@ -8728,6 +8729,143 @@ describe('registerPtyHandlers', () => {
       expect.objectContaining({ expectedSourceBinding })
     )
     expect(proc.kill).toHaveBeenCalledOnce()
+  })
+
+  it('retains cleanup authority when rejected SSH split shutdown fails', async () => {
+    type RuntimeSpawnController = {
+      spawn(args: {
+        cols: number
+        rows: number
+        connectionId: string
+        worktreeId: string
+        tabId: string
+        leafId: string
+        persistHostSessionBinding: boolean
+        expectedSourceBinding: {
+          worktreeId: string
+          tabId: string
+          leafId: string
+          ptyId: string
+        }
+      }): Promise<{ id: string }>
+    }
+    const connectionId = 'ssh-split-rejection'
+    const appPtyId = `ssh:${connectionId}@@rejected-split-pty`
+    const liveRemotePtys = new Set<string>()
+    let shutdownFails = true
+    const shutdown = vi.fn(async (id: string) => {
+      if (shutdownFails) {
+        throw new Error('injected remote shutdown failure')
+      }
+      liveRemotePtys.delete(id)
+    })
+    registerSshPtyProvider(connectionId, {
+      spawn: vi.fn(async () => {
+        liveRemotePtys.add(appPtyId)
+        return { id: appPtyId }
+      }),
+      write: vi.fn(),
+      resize: vi.fn(),
+      shutdown,
+      sendSignal: vi.fn(),
+      getCwd: vi.fn(),
+      getInitialCwd: vi.fn(),
+      clearBuffer: vi.fn(),
+      acknowledgeDataEvent: vi.fn(),
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {}),
+      listProcesses: vi.fn(async () =>
+        Array.from(liveRemotePtys, (id) => ({ id, cwd: '/remote/repo', title: 'shell' }))
+      ),
+      hasChildProcesses: vi.fn(),
+      getForegroundProcess: vi.fn(),
+      serialize: vi.fn(),
+      revive: vi.fn(),
+      getDefaultShell: vi.fn(),
+      getProfiles: vi.fn()
+    } as never)
+    const store = {
+      persistPtyBinding: vi.fn(() => false),
+      upsertSshRemotePtyLease: vi.fn(),
+      markSshRemotePtyLease: vi.fn()
+    }
+    let controller: RuntimeSpawnController | null = null
+    const runtime = {
+      setPtyController: vi.fn((value) => {
+        controller = value
+      }),
+      preAllocateHandleForPty: vi.fn(() => 'term_rejected_split'),
+      registerPreAllocatedHandleForPty: vi.fn(),
+      registerPty: vi.fn(),
+      noteTerminalSpawnCommand: vi.fn(),
+      getDriver: vi.fn(() => ({ kind: 'host' })),
+      onPtySpawned: vi.fn(),
+      onPtyExit: vi.fn(),
+      onPtyData: vi.fn()
+    }
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const leafId = '33333333-3333-4333-8333-333333333333'
+
+    try {
+      registerPtyHandlers(
+        mainWindow as never,
+        runtime as never,
+        undefined,
+        undefined,
+        undefined,
+        store as never
+      )
+      await expect(
+        (controller as unknown as RuntimeSpawnController).spawn({
+          cols: 80,
+          rows: 24,
+          connectionId,
+          worktreeId: 'repo-1::/remote/repo',
+          tabId: 'tab-rejected-split',
+          leafId,
+          persistHostSessionBinding: true,
+          expectedSourceBinding: {
+            worktreeId: 'repo-1::/remote/repo',
+            tabId: 'tab-rejected-split',
+            leafId: '22222222-2222-4222-8222-222222222222',
+            ptyId: `ssh:${connectionId}@@source-pty`
+          }
+        })
+      ).rejects.toThrow('terminal_split_source_not_found')
+
+      expect(runtime.registerPty).not.toHaveBeenCalled()
+      expect(liveRemotePtys.has(appPtyId)).toBe(true)
+      expect(getPtyIdsForConnection(connectionId)).toEqual([appPtyId])
+      expect(store.upsertSshRemotePtyLease).toHaveBeenCalledWith(
+        expect.objectContaining({
+          targetId: connectionId,
+          ptyId: 'rejected-split-pty',
+          state: 'attached'
+        })
+      )
+      expect(warn).toHaveBeenCalledWith(
+        '[pty] failed to clean up PTY after persistence failure:',
+        expect.objectContaining({ message: 'injected remote shutdown failure' })
+      )
+
+      shutdownFails = false
+      await handlers.get('pty:kill')!(null, { id: appPtyId })
+
+      expect(shutdown).toHaveBeenCalledTimes(2)
+      expect(liveRemotePtys.has(appPtyId)).toBe(false)
+      expect(getPtyIdsForConnection(connectionId)).toEqual([])
+      expect(store.markSshRemotePtyLease).toHaveBeenCalledWith(
+        connectionId,
+        'rejected-split-pty',
+        'terminated'
+      )
+    } finally {
+      error.mockRestore()
+      warn.mockRestore()
+      unregisterSshPtyProvider(connectionId)
+    }
   })
 
   it('reports lower-owner commit before rejecting an early-exited runtime incarnation', async () => {
