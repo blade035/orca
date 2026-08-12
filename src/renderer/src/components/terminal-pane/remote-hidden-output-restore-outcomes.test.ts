@@ -638,6 +638,23 @@ describe('remote hidden-output restore outcomes', () => {
     drive.disposable.dispose()
   })
 
+  it('[modern] leaves the painted frame alone when the empty snapshot carries no image', async () => {
+    const serializeBuffer = vi.fn()
+    const serializeBufferOutcome = vi.fn().mockResolvedValue({
+      availability: { kind: 'snapshot' },
+      snapshot: { ...HOST_SNAPSHOT, data: '' }
+    })
+    const drive = await connectHiddenRemoteAgentPane(serializeBuffer, serializeBufferOutcome)
+    vi.useFakeTimers()
+    driveHiddenBacklogThenReveal(drive)
+    await flushAsyncTicks(20)
+
+    // \x1b[3J wipes xterm scrollback; a host answer with nothing in it must never
+    // cost the user the frame they can still see.
+    expect(drive.writtenChunks().join('')).not.toContain('\x1b[3J')
+    drive.disposable.dispose()
+  })
+
   it('[modern] waits for a reported outcome instead of applying the old elapsed-time deadline', async () => {
     const pendingOutcome = createDeferred<{
       availability: { kind: 'snapshot' }
