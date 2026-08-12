@@ -1615,6 +1615,16 @@ function normalizeSshRemotePtyLease(value: unknown): SshRemotePtyLease | null {
     ...(typeof raw.worktreeId === 'string' ? { worktreeId: raw.worktreeId } : {}),
     ...(typeof raw.tabId === 'string' ? { tabId: raw.tabId } : {}),
     ...(typeof raw.leafId === 'string' && raw.leafId.length <= 256 ? { leafId: raw.leafId } : {}),
+    ...(raw.cleanupPending === true ? { cleanupPending: true } : {}),
+    ...(typeof raw.cleanupExpectedPaneKey === 'string'
+      ? { cleanupExpectedPaneKey: raw.cleanupExpectedPaneKey }
+      : {}),
+    ...(typeof raw.cleanupExpectedTabId === 'string'
+      ? { cleanupExpectedTabId: raw.cleanupExpectedTabId }
+      : {}),
+    ...(typeof raw.cleanupExpectedIncarnationId === 'string'
+      ? { cleanupExpectedIncarnationId: raw.cleanupExpectedIncarnationId }
+      : {}),
     state,
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
@@ -7259,11 +7269,42 @@ export class Store {
         entry.targetId === normalizedLease.targetId && entry.ptyId === normalizedLease.ptyId
     )
     const existing = existingIndex !== -1 ? this.state.sshRemotePtyLeases[existingIndex] : undefined
+    if (normalizedLease.cleanupPending === true && existing && !existing.cleanupPending) {
+      this.clearSshRemotePtyBindingsForLeases(normalizedLease.targetId, [existing])
+    }
     const next: SshRemotePtyLease = {
       ...existing,
       ...normalizedLease,
       createdAt: existing?.createdAt ?? normalizedLease.createdAt ?? now,
       updatedAt: normalizedLease.updatedAt ?? now
+    }
+    if (normalizedLease.cleanupPending === true) {
+      next.cleanupPending = true
+      delete next.tabId
+      delete next.leafId
+      delete next.cleanupExpectedPaneKey
+      delete next.cleanupExpectedTabId
+      delete next.cleanupExpectedIncarnationId
+      Object.assign(next, {
+        ...(normalizedLease.cleanupExpectedPaneKey
+          ? { cleanupExpectedPaneKey: normalizedLease.cleanupExpectedPaneKey }
+          : {}),
+        ...(normalizedLease.cleanupExpectedTabId
+          ? { cleanupExpectedTabId: normalizedLease.cleanupExpectedTabId }
+          : {}),
+        ...(normalizedLease.cleanupExpectedIncarnationId
+          ? { cleanupExpectedIncarnationId: normalizedLease.cleanupExpectedIncarnationId }
+          : {})
+      })
+    } else if (
+      normalizedLease.cleanupPending === false ||
+      normalizedLease.tabId !== undefined ||
+      normalizedLease.leafId !== undefined
+    ) {
+      delete next.cleanupPending
+      delete next.cleanupExpectedPaneKey
+      delete next.cleanupExpectedTabId
+      delete next.cleanupExpectedIncarnationId
     }
     if (existingIndex !== -1) {
       this.state.sshRemotePtyLeases[existingIndex] = next
@@ -7374,6 +7415,28 @@ export class Store {
       this.clearSshRemotePtyBindingsForLeases(targetId, [lease])
     }
     this.flush()
+  }
+
+  removeMatchingSshPtyCleanupLease(
+    targetId: string,
+    ptyId: string,
+    cleanupExpectedIncarnationId: string | undefined
+  ): boolean {
+    const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
+    const leases = this.state.sshRemotePtyLeases ?? []
+    const next = leases.filter(
+      (lease) =>
+        lease.targetId !== targetId ||
+        lease.ptyId !== relayPtyId ||
+        lease.cleanupPending !== true ||
+        lease.cleanupExpectedIncarnationId !== cleanupExpectedIncarnationId
+    )
+    if (next.length === leases.length) {
+      return false
+    }
+    this.state.sshRemotePtyLeases = next
+    this.flush()
+    return true
   }
 
   removeSshRemotePtyLease(targetId: string, ptyId: string): void {

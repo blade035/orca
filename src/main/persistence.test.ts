@@ -10784,6 +10784,83 @@ describe('Store', () => {
     ])
   })
 
+  it('replaces stale surface identity with cleanup identity for a reused SSH PTY id', async () => {
+    const store = await createStore()
+    store.upsertSshRemotePtyLease({
+      targetId: 'ssh-1',
+      ptyId: 'remote-pty',
+      worktreeId: 'wt-old',
+      tabId: 'tab-old',
+      leafId: TEST_LEAF_1,
+      state: 'attached'
+    })
+    store.setWorkspaceSession({
+      activeRepoId: 'r1',
+      activeWorktreeId: 'wt-old',
+      activeTabId: 'tab-old',
+      tabsByWorktree: {
+        'wt-old': [
+          {
+            id: 'tab-old',
+            worktreeId: 'wt-old',
+            title: 'Terminal',
+            customTitle: null,
+            color: null,
+            sortOrder: 0,
+            createdAt: 1,
+            ptyId: 'ssh:ssh-1@@remote-pty'
+          }
+        ]
+      },
+      terminalLayoutsByTabId: {
+        'tab-old': {
+          root: { type: 'leaf', leafId: TEST_LEAF_1 },
+          activeLeafId: TEST_LEAF_1,
+          expandedLeafId: null,
+          ptyIdsByLeafId: { [TEST_LEAF_1]: 'ssh:ssh-1@@remote-pty' }
+        }
+      }
+    })
+
+    store.upsertSshRemotePtyLease({
+      targetId: 'ssh-1',
+      ptyId: 'remote-pty',
+      cleanupPending: true,
+      cleanupExpectedPaneKey: `tab-new:${TEST_LEAF_2}`,
+      cleanupExpectedTabId: 'tab-new',
+      cleanupExpectedIncarnationId: 'incarnation-new',
+      state: 'attached'
+    })
+
+    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([
+      expect.objectContaining({
+        ptyId: 'remote-pty',
+        cleanupPending: true,
+        cleanupExpectedPaneKey: `tab-new:${TEST_LEAF_2}`,
+        cleanupExpectedTabId: 'tab-new',
+        cleanupExpectedIncarnationId: 'incarnation-new'
+      })
+    ])
+    expect(store.getSshRemotePtyLeases('ssh-1')[0]).not.toHaveProperty('tabId')
+    expect(store.getSshRemotePtyLeases('ssh-1')[0]).not.toHaveProperty('leafId')
+    expect(store.getWorkspaceSession().tabsByWorktree['wt-old'][0].ptyId).toBeNull()
+    expect(store.getWorkspaceSession().terminalLayoutsByTabId['tab-old'].ptyIdsByLeafId).toEqual({})
+
+    store.upsertSshRemotePtyLease({
+      targetId: 'ssh-1',
+      ptyId: 'remote-pty',
+      cleanupPending: true,
+      cleanupExpectedTabId: 'tab-newer',
+      state: 'attached'
+    })
+    expect(store.getSshRemotePtyLeases('ssh-1')[0]).toEqual(
+      expect.objectContaining({ cleanupPending: true, cleanupExpectedTabId: 'tab-newer' })
+    )
+    expect(store.getSshRemotePtyLeases('ssh-1')[0]).not.toHaveProperty(
+      'cleanupExpectedIncarnationId'
+    )
+  })
+
   it('rejects mismatched scoped SSH remote PTY lease ids on write paths', async () => {
     const store = await createStore()
 

@@ -8759,10 +8759,10 @@ describe('registerPtyHandlers', () => {
       }
       liveRemotePtys.delete(id)
     })
-    registerSshPtyProvider(connectionId, {
+    const provider = {
       spawn: vi.fn(async () => {
         liveRemotePtys.add(appPtyId)
-        return { id: appPtyId }
+        return { id: appPtyId, incarnationId: 'rejected-split-incarnation' }
       }),
       write: vi.fn(),
       resize: vi.fn(),
@@ -8784,11 +8784,20 @@ describe('registerPtyHandlers', () => {
       revive: vi.fn(),
       getDefaultShell: vi.fn(),
       getProfiles: vi.fn()
-    } as never)
+    }
+    registerSshPtyProvider(connectionId, provider as never)
+    let cleanupLease: Record<string, unknown> | undefined
     const store = {
       persistPtyBinding: vi.fn(() => false),
-      upsertSshRemotePtyLease: vi.fn(),
-      markSshRemotePtyLease: vi.fn()
+      upsertSshRemotePtyLease: vi.fn((lease) => {
+        cleanupLease = { ...lease }
+      }),
+      getSshRemotePtyLeases: vi.fn(() => (cleanupLease ? [cleanupLease] : [])),
+      markSshRemotePtyLease: vi.fn((_targetId, _ptyId, state) => {
+        if (cleanupLease) {
+          cleanupLease.state = state
+        }
+      })
     }
     let controller: RuntimeSpawnController | null = null
     const runtime = {
@@ -8843,6 +8852,10 @@ describe('registerPtyHandlers', () => {
           targetId: connectionId,
           ptyId: 'rejected-split-pty',
           worktreeId: 'repo-1::/remote/repo',
+          cleanupPending: true,
+          cleanupExpectedPaneKey: `tab-rejected-split:${leafId}`,
+          cleanupExpectedTabId: 'tab-rejected-split',
+          cleanupExpectedIncarnationId: 'rejected-split-incarnation',
           state: 'attached'
         })
       )
@@ -8853,6 +8866,15 @@ describe('registerPtyHandlers', () => {
         expect.objectContaining({ message: 'injected remote shutdown failure' })
       )
 
+      unregisterSshPtyProvider(connectionId)
+      await expect(handlers.get('pty:kill')!(null, { id: appPtyId })).rejects.toThrow(
+        'requires reconnect'
+      )
+      expect(liveRemotePtys.has(appPtyId)).toBe(true)
+      expect(getPtyIdsForConnection(connectionId)).toEqual([appPtyId])
+      expect(store.markSshRemotePtyLease).not.toHaveBeenCalled()
+
+      registerSshPtyProvider(connectionId, provider as never)
       shutdownFails = false
       await handlers.get('pty:kill')!(null, { id: appPtyId })
 

@@ -1127,6 +1127,21 @@ async function shutdownFreshPtyAfterBindingFailure(
   finishPtyShutdown(id, connectionId, store)
 }
 
+function isPendingSshPtyCleanup(
+  id: string,
+  connectionId: string,
+  store: Store | undefined
+): boolean {
+  const relayPtyId = getRelayPtyId(connectionId, id)
+  const leases = store?.getSshRemotePtyLeases?.(connectionId)
+  return Boolean(
+    leases?.some(
+      (lease) =>
+        lease.ptyId === relayPtyId && lease.cleanupPending === true && lease.state !== 'terminated'
+    )
+  )
+}
+
 // ─── Host PTY env assembly ──────────────────────────────────────────
 // Why: centralize host-local env injections so both spawn paths (local + daemon) get them; implemented twice they drifted, silently breaking daemon PTYs.
 
@@ -5202,7 +5217,7 @@ export function registerPtyHandlers(
           markNativeWindowsConptyPty(result.id)
         }
         const relayResultId = getRelayPtyId(args.connectionId, result.id)
-        const persistSshLease = (includeSurfaceIdentity = true): void => {
+        const persistSshLease = (cleanupPending = false): void => {
           if (!store || !args.connectionId) {
             return
           }
@@ -5211,13 +5226,23 @@ export function registerPtyHandlers(
             targetId: args.connectionId,
             ptyId: relayResultId,
             ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
-            ...(includeSurfaceIdentity && typeof args.tabId === 'string'
-              ? { tabId: args.tabId }
-              : {}),
-            ...(includeSurfaceIdentity &&
-            typeof args.leafId === 'string' &&
-            isTerminalLeafId(args.leafId)
+            ...(!cleanupPending && typeof args.tabId === 'string' ? { tabId: args.tabId } : {}),
+            ...(!cleanupPending && typeof args.leafId === 'string' && isTerminalLeafId(args.leafId)
               ? { leafId: args.leafId }
+              : {}),
+            cleanupPending,
+            ...(cleanupPending &&
+            typeof args.tabId === 'string' &&
+            typeof args.leafId === 'string' &&
+            isValidTerminalTabId(args.tabId) &&
+            isTerminalLeafId(args.leafId)
+              ? { cleanupExpectedPaneKey: makePaneKey(args.tabId, args.leafId) }
+              : {}),
+            ...(cleanupPending && typeof args.tabId === 'string'
+              ? { cleanupExpectedTabId: args.tabId }
+              : {}),
+            ...(cleanupPending && result.incarnationId
+              ? { cleanupExpectedIncarnationId: result.incarnationId }
               : {}),
             state: 'attached',
             lastAttachedAt: Date.now()
@@ -5266,7 +5291,7 @@ export function registerPtyHandlers(
             console.error('[pty] failed to persist runtime PTY binding after spawn:', err)
             if (!result.isReattach) {
               // Why: retain durable cleanup authority without reconnect resurrecting the rejected pane.
-              persistSshLease(false)
+              persistSshLease(true)
               await shutdownFreshPtyAfterBindingFailure(
                 provider,
                 result.id,
@@ -5494,6 +5519,9 @@ export function registerPtyHandlers(
           provider = connectionId ? getProvider(connectionId) : getProviderForPty(ptyId)
         } catch {
           if (connectionId) {
+            if (isPendingSshPtyCleanup(ptyId, connectionId, store)) {
+              return false
+            }
             // Why: runtime/CLI close can target a detached SSH PTY after its
             // provider was unregistered. Tombstone the lease so reconnect does
             // not revive a terminal the user explicitly closed.
@@ -5601,6 +5629,9 @@ export function registerPtyHandlers(
         provider = connectionId ? getProvider(connectionId) : getProviderForPty(ptyId)
       } catch {
         if (connectionId) {
+          if (isPendingSshPtyCleanup(ptyId, connectionId, store)) {
+            return false
+          }
           // Why: an absent SSH provider means there is no live target left to
           // await, but the relay lease must still be tombstoned.
           const incarnationId = finishPtyShutdown(ptyId, connectionId, store)
@@ -6744,6 +6775,7 @@ export function registerPtyHandlers(
             ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
             ...(typeof args.tabId === 'string' ? { tabId: args.tabId } : {}),
             ...(validatedLeafId ? { leafId: validatedLeafId } : {}),
+            cleanupPending: false,
             state: 'attached',
             lastAttachedAt: Date.now()
           })
@@ -6780,6 +6812,25 @@ export function registerPtyHandlers(
           } catch (err) {
             console.error('[pty] failed to persist PTY binding after spawn:', err)
             if (!result.isReattach) {
+              if (store && args.connectionId) {
+                store.upsertSshRemotePtyLease({
+                  targetId: args.connectionId,
+                  ptyId: relayResultId,
+                  ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
+                  cleanupPending: true,
+                  ...(typeof args.tabId === 'string' &&
+                  validatedLeafId &&
+                  isValidTerminalTabId(args.tabId)
+                    ? { cleanupExpectedPaneKey: makePaneKey(args.tabId, validatedLeafId) }
+                    : {}),
+                  ...(typeof args.tabId === 'string' ? { cleanupExpectedTabId: args.tabId } : {}),
+                  ...(result.incarnationId
+                    ? { cleanupExpectedIncarnationId: result.incarnationId }
+                    : {}),
+                  state: 'attached',
+                  lastAttachedAt: Date.now()
+                })
+              }
               await shutdownFreshPtyAfterBindingFailure(
                 provider,
                 result.id,
@@ -7530,6 +7581,9 @@ export function registerPtyHandlers(
     }
     const provider = connectionId ? sshProviders.get(connectionId) : tryGetProviderForPty(args.id)
     if (!provider && connectionId) {
+      if (isPendingSshPtyCleanup(args.id, connectionId, store)) {
+        throw new Error('SSH PTY cleanup requires reconnect before shutdown can be confirmed')
+      }
       // Why: detached SSH PTYs intentionally keep ownership after their
       // provider is unregistered; hydrated app-scoped ids can also arrive
       // before ownership is rebuilt. Tombstone instead of falling back local.

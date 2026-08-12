@@ -2248,11 +2248,14 @@ export class SshRelaySession {
     const activeLeases = this.store
       .getSshRemotePtyLeases(this.targetId)
       .filter((lease) => lease.state !== 'terminated' && lease.state !== 'expired')
-    const activeLeaseByPtyId = new Map(activeLeases.map((lease) => [lease.ptyId, lease]))
-    const leasedPtyIds = activeLeases.map((lease) => lease.ptyId)
+    const cleanupLeases = activeLeases.filter((lease) => lease.cleanupPending === true)
+    const surfaceLeases = activeLeases.filter((lease) => lease.cleanupPending !== true)
+    const cleanupPtyIds = new Set(cleanupLeases.map((lease) => lease.ptyId))
+    const activeLeaseByPtyId = new Map(surfaceLeases.map((lease) => [lease.ptyId, lease]))
+    const leasedPtyIds = surfaceLeases.map((lease) => lease.ptyId)
     // Why: pass pane identity so the relay can reject cross-generation id collisions; tabId falls back for pre-leafId leases.
     const expectedIdentityByPtyId = new Map(
-      activeLeases
+      surfaceLeases
         .map((lease): [string, ExpectedPtyIdentity] | null => {
           const expected = expectedIdentityForLease(lease)
           return expected ? [lease.ptyId, expected] : null
@@ -2263,9 +2266,9 @@ export class SshRelaySession {
     // Why: after app restart ptyOwnership is empty, but durable SSH leases still describe grace-window survivors.
     const ptyIds = Array.from(
       new Set([
-        ...getPtyIdsForConnection(this.targetId).map((ptyId) =>
-          toRelaySshPtyId(this.targetId, ptyId)
-        ),
+        ...getPtyIdsForConnection(this.targetId)
+          .map((ptyId) => toRelaySshPtyId(this.targetId, ptyId))
+          .filter((ptyId) => !cleanupPtyIds.has(ptyId)),
         ...leasedPtyIds
       ])
     )
@@ -2274,6 +2277,13 @@ export class SshRelaySession {
     if (!ptyProvider || providerGeneration === null || this.mux !== mux) {
       return
     }
+    void this.retryPendingPtyCleanup(ptyProvider, cleanupLeases, shouldContinue).catch((error) => {
+      console.warn(
+        `[ssh-relay-session] Cleanup retries failed for ${this.targetId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    })
     let nextPtyIndex = 0
     const worker = async (): Promise<void> => {
       while (shouldContinue()) {
@@ -2313,6 +2323,83 @@ export class SshRelaySession {
         Array.from(attachedLeaseIds)
       )
     }
+  }
+
+  private async retryPendingPtyCleanup(
+    ptyProvider: SshPtyProvider,
+    leases: SshPtyLease[],
+    shouldContinue: () => boolean
+  ): Promise<void> {
+    if (leases.length === 0) {
+      return
+    }
+    const inventory = await ptyProvider.listProcesses({
+      deadlineMs: Date.now() + SSH_PTY_REATTACH_ATTEMPT_TIMEOUT_MS
+    })
+    const processById = new Map(inventory.map((process) => [process.id, process]))
+    const retireCleanupLease = (lease: SshPtyLease, clearRouting: boolean): void => {
+      if (!shouldContinue()) {
+        return
+      }
+      const retired = this.store.removeMatchingSshPtyCleanupLease(
+        this.targetId,
+        lease.ptyId,
+        lease.cleanupExpectedIncarnationId
+      )
+      if (retired && clearRouting) {
+        const appPtyId = toAppSshPtyId(this.targetId, lease.ptyId)
+        clearProviderPtyState(appPtyId)
+        deletePtyOwnership(appPtyId)
+      }
+    }
+    let nextLeaseIndex = 0
+    const worker = async (): Promise<void> => {
+      while (shouldContinue()) {
+        const lease = leases[nextLeaseIndex++]
+        if (!lease) {
+          return
+        }
+        const appPtyId = toAppSshPtyId(this.targetId, lease.ptyId)
+        const process = processById.get(appPtyId)
+        if (!process) {
+          retireCleanupLease(lease, true)
+          continue
+        }
+        if (
+          !lease.cleanupExpectedIncarnationId ||
+          !process.incarnationId ||
+          process.incarnationId !== lease.cleanupExpectedIncarnationId
+        ) {
+          if (process.incarnationId && lease.cleanupExpectedIncarnationId) {
+            retireCleanupLease(lease, false)
+          } else {
+            console.warn(
+              `[ssh-relay-session] PTY ${lease.ptyId} cleanup retry lacks incarnation proof for ${this.targetId}`
+            )
+          }
+          continue
+        }
+        try {
+          await ptyProvider.shutdown(appPtyId, {
+            immediate: true,
+            deadlineMs: Date.now() + SSH_PTY_REATTACH_ATTEMPT_TIMEOUT_MS
+          })
+        } catch (error) {
+          if (!isSshPtyNotFoundError(error) && !isSshPtyIdentityMismatchError(error)) {
+            console.warn(
+              `[ssh-relay-session] PTY ${lease.ptyId} cleanup retry failed for ${this.targetId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+            continue
+          }
+        }
+        retireCleanupLease(lease, true)
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(SSH_PTY_REATTACH_MAX_CONCURRENCY, leases.length) }, worker)
+    )
   }
 
   private async reattachKnownPty(args: {

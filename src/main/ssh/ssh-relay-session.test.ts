@@ -531,46 +531,6 @@ describe('SshRelaySession', () => {
     )
   })
 
-  it('does not restore a cleanup-only lease as a terminal surface', async () => {
-    const { mockConn, mockStore, mockPortForward, getMainWindow } = createMockDeps()
-    const { getSshPtyProvider } = await import('../ipc/pty')
-    const mockAttach = vi.fn().mockResolvedValue({ incarnationId: 'cleanup-incarnation' })
-    vi.mocked(getSshPtyProvider).mockReturnValue({
-      attachForReconnect: mockAttach,
-      dispose: vi.fn()
-    } as unknown as ReturnType<typeof getSshPtyProvider>)
-    vi.mocked(mockStore.getSshRemotePtyLeases).mockReturnValue([
-      {
-        targetId: 'target-1',
-        ptyId: 'cleanup-pty',
-        worktreeId: 'repo-1::/remote/repo',
-        state: 'detached'
-      }
-    ] as ReturnType<typeof mockStore.getSshRemotePtyLeases>)
-    const runtime = {
-      onPtySpawned: vi.fn(),
-      registerPty: vi.fn()
-    }
-    const session = new SshRelaySession(
-      'target-1',
-      getMainWindow,
-      mockStore,
-      mockPortForward,
-      runtime as never
-    )
-
-    await session.establish(mockConn)
-
-    expect(mockAttach).toHaveBeenCalledWith('cleanup-pty')
-    expect(runtime.onPtySpawned).toHaveBeenCalledWith(
-      'ssh:target-1@@cleanup-pty',
-      'cleanup-incarnation',
-      { awaitsRegistration: false }
-    )
-    expect(runtime.registerPty).not.toHaveBeenCalled()
-    expect(mockStore.persistPtyBinding).not.toHaveBeenCalled()
-  })
-
   it('forwards a lease tab identity to reattach so a reset relay cannot cross-wire it', async () => {
     const { mockConn, mockStore, mockPortForward, getMainWindow } = createMockDeps()
     const { getSshPtyProvider } = await import('../ipc/pty')
