@@ -78,15 +78,22 @@ Startup chooses an advertised address in this order:
 LAN exposure remains explicit. Public addresses require an explicit advertised address. Discovery
 does not modify Tailscale or firewall configuration.
 
-Human output distinguishes the two network roles:
+Supported interactive terminals render credential-bearing URLs as compact clickable actions:
 
 ```text
-Orca server ready
-Bound endpoint: ws://127.0.0.1:6768
-Advertised endpoint: ws://127.0.0.1:6768
-Web client URL: http://127.0.0.1:6768/web-index.html#pairing=...
-Pairing URL: orca://pair?code=...
+Orca server is ready
+
+Connect
+  Web browser   Open web client
+  Desktop app  Add this host
+
+Server details
+  Listening on  ws://127.0.0.1:6768
+  Pairing uses  ws://127.0.0.1:6768
 ```
+
+Redirected output prints the full web client and pairing URLs. `--json` remains the stable
+machine-readable contract.
 
 ### Automation
 

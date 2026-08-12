@@ -148,15 +148,22 @@ proxy URL such as `https://orca.example.com/runtime` (`http(s)` is normalized
 to `ws(s)`). Wildcard addresses such as `*`, `0.0.0.0`, and `::` cannot be
 advertised.
 
-The command writes one ready block to stdout after the listener bind and
-pairing initialization complete:
+After listener bind and pairing initialization, supported interactive terminals
+render credential-bearing URLs as compact clickable actions:
 
 ```text
-Orca server ready
-Bound endpoint: ws://0.0.0.0:6768
-Advertised endpoint: ws://100.64.1.20:6768
-Pairing URL: orca://pair?code=...
+Orca server is ready
+
+Connect
+  Web browser   Open web client
+  Desktop app  Add this host
+
+Server details
+  Listening on  ws://0.0.0.0:6768
+  Pairing uses  ws://100.64.1.20:6768
 ```
+
+Redirected output prints the full web client and pairing URLs.
 
 For supervisors, request the versioned single-line JSON contract:
 

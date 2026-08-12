@@ -32,10 +32,21 @@ export type ServeReadinessOutput =
 
 type ReadinessWrite = (output: string) => Promise<void>
 
+type HumanReadinessPresentation = {
+  hyperlinks: boolean
+}
+
+const plainHumanPresentation: HumanReadinessPresentation = { hyperlinks: false }
+
 export class ServeReadinessPublisher {
   private state: 'pending' | 'publishing' | 'published' | 'failed' = 'pending'
 
-  constructor(private readonly write: ReadinessWrite = writeStdout) {}
+  constructor(
+    private readonly write: ReadinessWrite = writeStdout,
+    private readonly presentation: HumanReadinessPresentation = write === writeStdout
+      ? detectHumanPresentation()
+      : plainHumanPresentation
+  ) {}
 
   async publish(
     readiness: ServeReadiness,
@@ -48,7 +59,7 @@ export class ServeReadinessPublisher {
     signal?.throwIfAborted()
     this.state = 'publishing'
     try {
-      await this.write(`${renderServeReadiness(readiness, output)}\n`)
+      await this.write(`${renderServeReadiness(readiness, output, this.presentation)}\n`)
       this.state = 'published'
     } catch (error) {
       this.state = 'failed'
@@ -59,7 +70,8 @@ export class ServeReadinessPublisher {
 
 export function renderServeReadiness(
   readiness: ServeReadiness,
-  output: ServeReadinessOutput
+  output: ServeReadinessOutput,
+  presentation: HumanReadinessPresentation = plainHumanPresentation
 ): string {
   if (output.mode === 'recipe-json') {
     if (!readiness.pairing.available) {
@@ -85,28 +97,86 @@ export function renderServeReadiness(
       pairing: readiness.pairing
     })
   }
-  return renderHumanReadiness(readiness)
+  return renderHumanReadiness(readiness, presentation)
 }
 
-function renderHumanReadiness(readiness: ServeReadiness): string {
-  const lines = [
-    'Orca server ready',
-    `Bound endpoint: ${readiness.boundEndpoint ?? 'websocket unavailable'}`,
-    `Advertised endpoint: ${readiness.advertisedEndpoint ?? 'unavailable'}`
-  ]
+function renderHumanReadiness(
+  readiness: ServeReadiness,
+  presentation: HumanReadinessPresentation
+): string {
+  if (!presentation.hyperlinks) {
+    return renderPlainHumanReadiness(readiness)
+  }
+
+  const lines = ['Orca server is ready', '']
   if (readiness.pairing.available) {
+    lines.push('Connect')
     if (readiness.pairing.webClientUrl) {
-      lines.push(`Web client URL: ${readiness.pairing.webClientUrl}`)
+      lines.push(
+        `  Web browser   ${terminalHyperlink('Open web client', readiness.pairing.webClientUrl)}`
+      )
     }
     if (readiness.pairing.scope === 'mobile' && readiness.pairing.qr) {
-      lines.push(`Mobile pairing QR:\n${readiness.pairing.qr}`)
+      lines.push('', `Mobile pairing QR:\n${readiness.pairing.qr}`)
     }
-    lines.push(`Pairing URL: ${readiness.pairing.url}`)
+    lines.push(`  Desktop app  ${terminalHyperlink('Add this host', readiness.pairing.url)}`)
+    lines.push('', '  These links contain access credentials. Keep them private.')
   } else {
-    lines.push(`Pairing unavailable: ${readiness.pairing.reason}`)
-    lines.push(`Pairing guidance: ${readiness.pairing.guidance}`)
+    lines.push(
+      'Pairing is unavailable',
+      `  Reason  ${readiness.pairing.reason}`,
+      `  Fix     ${readiness.pairing.guidance}`
+    )
   }
+  lines.push(
+    '',
+    'Server details',
+    `  Listening on  ${readiness.boundEndpoint ?? 'websocket unavailable'}`,
+    `  Pairing uses  ${readiness.advertisedEndpoint ?? 'unavailable'}`,
+    '',
+    'Keep this terminal open. Press Ctrl+C to stop.'
+  )
   return lines.join('\n')
+}
+
+function renderPlainHumanReadiness(readiness: ServeReadiness): string {
+  const lines = ['Orca server is ready', '']
+  if (readiness.pairing.available) {
+    if (readiness.pairing.webClientUrl) {
+      lines.push('Open the web client:', `Web client URL: ${readiness.pairing.webClientUrl}`, '')
+    }
+    if (readiness.pairing.scope === 'mobile' && readiness.pairing.qr) {
+      lines.push(`Mobile pairing QR:\n${readiness.pairing.qr}`, '')
+    }
+    lines.push('Or connect from the desktop app:', `Pairing URL: ${readiness.pairing.url}`, '')
+  } else {
+    lines.push(
+      `Pairing unavailable: ${readiness.pairing.reason}`,
+      `Pairing guidance: ${readiness.pairing.guidance}`,
+      ''
+    )
+  }
+  lines.push(
+    'Server details:',
+    `Bound endpoint: ${readiness.boundEndpoint ?? 'websocket unavailable'}`,
+    `Advertised endpoint: ${readiness.advertisedEndpoint ?? 'unavailable'}`,
+    '',
+    'Keep this terminal open. Press Ctrl+C to stop.'
+  )
+  return lines.join('\n')
+}
+
+function terminalHyperlink(label: string, destination: string): string {
+  return `\u001B]8;;${destination}\u001B\\${label}\u001B]8;;\u001B\\`
+}
+
+function detectHumanPresentation(): HumanReadinessPresentation {
+  return {
+    hyperlinks:
+      process.stdout.isTTY === true &&
+      process.env.FORCE_HYPERLINK !== '0' &&
+      process.env.TERM !== 'dumb'
+  }
 }
 
 function writeStdout(output: string): Promise<void> {

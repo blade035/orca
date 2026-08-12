@@ -41,12 +41,36 @@ describe('ServeReadinessPublisher', () => {
     expect(write).toHaveBeenCalledOnce()
     expect(write).toHaveBeenCalledWith(
       expect.stringContaining(
-        'Orca server ready\nBound endpoint: ws://0.0.0.0:6768\nAdvertised endpoint: wss://orca.example.test/runtime'
+        'Orca server is ready\n\nOpen the web client:\nWeb client URL: https://orca.example.test/runtime/web-index.html#pairing=secret'
       )
     )
     expect(write).toHaveBeenCalledWith(
       expect.stringContaining('Pairing URL: orca://pair?code=secret\n')
     )
+    expect(write).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Server details:\nBound endpoint: ws://0.0.0.0:6768\nAdvertised endpoint: wss://orca.example.test/runtime'
+      )
+    )
+  })
+
+  it('uses compact clickable actions in supported interactive terminals', async () => {
+    const write = vi.fn(async (_output: string) => {})
+    const publisher = new ServeReadinessPublisher(write, { hyperlinks: true })
+
+    await publisher.publish(ready, { mode: 'human' })
+
+    const output = write.mock.calls[0]?.[0] ?? ''
+    expect(output).toContain('Orca server is ready\n\nConnect')
+    expect(output).toContain(
+      '\u001B]8;;https://orca.example.test/runtime/web-index.html#pairing=secret\u001B\\Open web client\u001B]8;;\u001B\\'
+    )
+    expect(output).toContain(
+      '\u001B]8;;orca://pair?code=secret\u001B\\Add this host\u001B]8;;\u001B\\'
+    )
+    expect(output).not.toContain('Web client URL:')
+    expect(output).not.toContain('Pairing URL:')
+    expect(output).toContain('These links contain access credentials. Keep them private.')
   })
 
   it('publishes a versioned JSON contract with explicit endpoints and pairing availability', () => {
