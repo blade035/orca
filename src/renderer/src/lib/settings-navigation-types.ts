@@ -68,6 +68,7 @@ export type SettingsNavigationTarget = {
   hostId?: ExecutionHostId
   sectionId?: string
   intent?: (typeof SETTINGS_NAV_INTENTS)[number]
+  accessLink?: string
 }
 
 export function isSettingsNavigationTarget(value: unknown): value is SettingsNavigationTarget {
@@ -83,7 +84,9 @@ export function isSettingsNavigationTarget(value: unknown): value is SettingsNav
       (typeof target.hostId === 'string' && parseExecutionHostId(target.hostId) !== null)) &&
     (target.sectionId === undefined || typeof target.sectionId === 'string') &&
     (target.intent === undefined ||
-      (typeof target.intent === 'string' && SETTINGS_NAV_INTENT_SET.has(target.intent)))
+      (typeof target.intent === 'string' && SETTINGS_NAV_INTENT_SET.has(target.intent))) &&
+    (target.accessLink === undefined ||
+      (target.intent === 'add-remote-orca-server' && typeof target.accessLink === 'string'))
   )
 }
 

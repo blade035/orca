@@ -12,8 +12,13 @@ import {
   type TerminalLinkRoutingPreferenceRequester
 } from './terminal-url-link-hit-testing'
 import type { HttpLinkSourceOwner } from '@/lib/http-link-routing'
-import type { TerminalLinkActionContext } from './terminal-link-action-request'
+import {
+  requestTerminalLinkAction,
+  type TerminalLinkActionContext
+} from './terminal-link-action-request'
 import { handleTerminalFileLink } from './terminal-file-link-actions'
+import { isTerminalPairingLink, openTerminalPairingLink } from './terminal-pairing-link-actions'
+import { translate } from '@/i18n/i18n'
 
 type TerminalLinkEvent = Pick<MouseEvent, 'metaKey' | 'ctrlKey'> &
   Partial<
@@ -55,6 +60,7 @@ export function handleOscLink(
       requestOpenLinksInAppPreference?: TerminalLinkRoutingPreferenceRequester
       linkActionContext?: TerminalLinkActionContext | null
       actionDestinations?: TerminalHttpLinkActionDestinations
+      openPairingLink?: (accessLink: string) => boolean
     }
 ): boolean {
   if (!isDesktopOscLinkActivation(event)) {
@@ -120,6 +126,31 @@ export function handleOscLink(
         linkActionContext: deps.linkActionContext,
         actionDestinations: deps.actionDestinations,
         actionDestination: rawText
+      })
+    )
+  }
+
+  if (parsed.protocol === 'orca:' && isTerminalPairingLink(rawText)) {
+    const openPairingLink = (): boolean => {
+      return (deps.openPairingLink ?? openTerminalPairingLink)(rawText)
+    }
+    const runPairingLink = (): void => {
+      openPairingLink()
+    }
+    if (isTerminalLinkDirectActivation(event)) {
+      return finish(openPairingLink())
+    }
+    return finish(
+      requestTerminalLinkAction(event as MouseEvent, deps.linkActionContext, {
+        destination: rawText,
+        kind: 'url',
+        primary: {
+          label: translate(
+            'auto.components.terminal.pane.TerminalLinkActionPopover.addHost',
+            'Add host'
+          ),
+          run: runPairingLink
+        }
       })
     )
   }

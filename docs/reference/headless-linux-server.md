@@ -154,7 +154,7 @@ render credential-bearing URLs as compact clickable actions:
 ```text
 Orca server is ready
 
-Connect
+Connect  (click for options, or Cmd/Ctrl-click)
   Web browser   Open web client
   Desktop app  Add this host
 
@@ -163,7 +163,9 @@ Server details
   Pairing uses  ws://100.64.1.20:6768
 ```
 
-Redirected output prints the full web client and pairing URLs.
+Redirected output prints the full web client and pairing URLs. In Orca terminals, the desktop
+action opens the Remote Orca Servers form with the access link prefilled; its action menu also
+provides a copy fallback.
 
 For supervisors, request the versioned single-line JSON contract:
 

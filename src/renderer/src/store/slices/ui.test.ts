@@ -1985,6 +1985,30 @@ describe('createUISlice settings navigation', () => {
     })
   })
 
+  it('accepts an access-link prefill only for the remote server intent', () => {
+    const store = createUIStore()
+    const accessLink = 'orca://pair?code=secret'
+    store.getState().openSettingsTarget({
+      pane: 'servers',
+      repoId: null,
+      intent: 'add-remote-orca-server',
+      accessLink
+    })
+    expect(store.getState().settingsNavigationTarget).toEqual({
+      pane: 'servers',
+      repoId: null,
+      intent: 'add-remote-orca-server',
+      accessLink
+    })
+
+    const openSettingsTarget = store.getState().openSettingsTarget as unknown as (
+      target: unknown
+    ) => void
+    expect(() => openSettingsTarget({ pane: 'servers', repoId: null, accessLink })).toThrowError(
+      'openSettingsTarget received an invalid navigation target'
+    )
+  })
+
   it('rejects malformed settings targets before storing them', () => {
     const store = createUIStore()
     const openSettingsTarget = store.getState().openSettingsTarget as unknown as (

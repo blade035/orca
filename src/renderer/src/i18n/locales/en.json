@@ -2877,7 +2877,8 @@
             "copyLink": "Copy link",
             "copied": "Copied",
             "copiedLink": "Copied link",
-            "copyLinkFailed": "Failed to copy link"
+            "copyLinkFailed": "Failed to copy link",
+            "addHost": "Add host"
           },
           "TerminalSessionStateSaveFailureDialog": {
             "6bee0c8f17": "Open Disk Space Analyzer",

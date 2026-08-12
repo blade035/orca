@@ -110,7 +110,7 @@ function renderHumanReadiness(
 
   const lines = ['Orca server is ready', '']
   if (readiness.pairing.available) {
-    lines.push('Connect')
+    lines.push('Connect  (click for options, or Cmd/Ctrl-click)')
     if (readiness.pairing.webClientUrl) {
       lines.push(
         `  Web browser   ${terminalHyperlink('Open web client', readiness.pairing.webClientUrl)}`

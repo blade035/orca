@@ -8,6 +8,7 @@ import {
 } from './terminal-link-action-request'
 import { handleOscLink } from './terminal-osc-link-routing'
 import { handleTerminalHttpLink } from './terminal-url-link-hit-testing'
+import { encodePairingOffer } from '../../../../shared/pairing'
 
 const openUrl = vi.fn()
 const createBrowserTab = vi.fn()
@@ -208,5 +209,79 @@ describe('terminal link action routing', () => {
       })
     ).toBe(true)
     expect(request.mock.calls[0][0].destination).toBe(destination)
+  })
+
+  it.each([
+    ['macOS', 'Macintosh', { metaKey: true, ctrlKey: false }],
+    ['Windows', 'Windows', { metaKey: false, ctrlKey: true }],
+    ['Linux', 'Linux', { metaKey: false, ctrlKey: true }]
+  ])('opens a valid pairing link with the platform modifier on %s', (_name, userAgent, keys) => {
+    vi.stubGlobal('navigator', { userAgent })
+    const openPairingLink = vi.fn(() => true)
+    const accessLink = encodePairingOffer({
+      v: 2,
+      endpoint: 'ws://192.168.1.10:6768',
+      deviceToken: 'device-token',
+      publicKeyB64: 'public-key'
+    })
+
+    expect(
+      handleOscLink(
+        accessLink,
+        { ...plainEvent(), ...keys },
+        {
+          worktreeId: 'wt-1',
+          worktreePath: '/repo',
+          openPairingLink
+        }
+      )
+    ).toBe(true)
+    expect(openPairingLink).toHaveBeenCalledExactlyOnceWith(accessLink)
+  })
+
+  it('offers add and copy actions for a plain pairing-link click', () => {
+    const request = vi.fn()
+    const openPairingLink = vi.fn(() => true)
+    const accessLink = encodePairingOffer({
+      v: 2,
+      endpoint: 'wss://server.example.test/runtime',
+      deviceToken: 'device-token',
+      publicKeyB64: 'public-key'
+    })
+
+    expect(
+      handleOscLink(accessLink, plainEvent(), {
+        worktreeId: 'wt-1',
+        worktreePath: '/repo',
+        linkActionContext: actionContext(request),
+        openPairingLink
+      })
+    ).toBe(true)
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: accessLink,
+        kind: 'url',
+        primary: expect.objectContaining({ label: 'Add host' })
+      })
+    )
+    request.mock.calls[0][0].primary.run()
+    expect(openPairingLink).toHaveBeenCalledExactlyOnceWith(accessLink)
+  })
+
+  it('rejects unrelated custom-protocol OSC links', () => {
+    const openPairingLink = vi.fn(() => true)
+
+    expect(
+      handleOscLink(
+        'orca://unknown?code=secret',
+        { ...plainEvent(), metaKey: true },
+        {
+          worktreeId: 'wt-1',
+          worktreePath: '/repo',
+          openPairingLink
+        }
+      )
+    ).toBe(false)
+    expect(openPairingLink).not.toHaveBeenCalled()
   })
 })

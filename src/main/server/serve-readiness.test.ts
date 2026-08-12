@@ -61,7 +61,9 @@ describe('ServeReadinessPublisher', () => {
     await publisher.publish(ready, { mode: 'human' })
 
     const output = write.mock.calls[0]?.[0] ?? ''
-    expect(output).toContain('Orca server is ready\n\nConnect')
+    expect(output).toContain(
+      'Orca server is ready\n\nConnect  (click for options, or Cmd/Ctrl-click)'
+    )
     expect(output).toContain(
       '\u001B]8;;https://orca.example.test/runtime/web-index.html#pairing=secret\u001B\\Open web client\u001B]8;;\u001B\\'
     )

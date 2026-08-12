@@ -83,7 +83,7 @@ Supported interactive terminals render credential-bearing URLs as compact clicka
 ```text
 Orca server is ready
 
-Connect
+Connect  (click for options, or Cmd/Ctrl-click)
   Web browser   Open web client
   Desktop app  Add this host
 
@@ -93,7 +93,8 @@ Server details
 ```
 
 Redirected output prints the full web client and pairing URLs. `--json` remains the stable
-machine-readable contract.
+machine-readable contract. In Orca terminals, the desktop action opens the Remote Orca Servers
+form with the access link prefilled; its action menu also provides a copy fallback.
 
 ### Automation
 
