@@ -1834,6 +1834,7 @@ type ManagedWorktreeCreateArgs = {
   pendingFirstAgentMessageRename?: boolean
   automationProvenance?: AutomationWorkspaceProvenance
   cliProvenance?: CliWorkspaceProvenance
+  creatorProvenance?: Worktree['creatorProvenance']
   startup?: WorktreeStartupLaunch
   startupDraft?: string
   startupDraftPaste?: WorktreeStartupDraftPaste
