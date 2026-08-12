@@ -646,10 +646,10 @@ describe('SshRelaySession reconnect incarnation ordering', () => {
       'ssh:target-1@@cleanup-pty',
       expect.objectContaining({ immediate: true, deadlineMs: expect.any(Number) })
     )
-    expect(mockStore.removeMatchingSshPtyCleanupLease).toHaveBeenCalledWith(
-      'target-1',
-      'cleanup-pty',
-      'cleanup-incarnation'
+    await vi.waitFor(() =>
+      expect(mockStore.removeMatchingSshPtyCleanupLeases).toHaveBeenCalledWith('target-1', [
+        { ptyId: 'cleanup-pty', cleanupExpectedIncarnationId: 'cleanup-incarnation' }
+      ])
     )
     expect(runtime.onPtySpawned).not.toHaveBeenCalled()
     expect(runtime.registerPty).not.toHaveBeenCalled()
@@ -696,11 +696,7 @@ describe('SshRelaySession reconnect incarnation ordering', () => {
     try {
       await session.establish(mockConn)
       expect(shutdown).toHaveBeenCalledOnce()
-      expect(mockStore.removeMatchingSshPtyCleanupLease).not.toHaveBeenCalledWith(
-        'target-1',
-        'cleanup-pty',
-        'cleanup-incarnation'
-      )
+      expect(mockStore.removeMatchingSshPtyCleanupLeases).not.toHaveBeenCalled()
       expect(runtime.onPtySpawned).not.toHaveBeenCalled()
       expect(runtime.registerPty).not.toHaveBeenCalled()
     } finally {
@@ -749,17 +745,13 @@ describe('SshRelaySession reconnect incarnation ordering', () => {
       await session.establish(mockConn)
       expect(shutdown).not.toHaveBeenCalled()
       if (terminates) {
-        expect(mockStore.removeMatchingSshPtyCleanupLease).toHaveBeenCalledWith(
-          'target-1',
-          'cleanup-pty',
-          'expected-incarnation'
+        await vi.waitFor(() =>
+          expect(mockStore.removeMatchingSshPtyCleanupLeases).toHaveBeenCalledWith('target-1', [
+            { ptyId: 'cleanup-pty', cleanupExpectedIncarnationId: 'expected-incarnation' }
+          ])
         )
       } else {
-        expect(mockStore.removeMatchingSshPtyCleanupLease).not.toHaveBeenCalledWith(
-          'target-1',
-          'cleanup-pty',
-          'expected-incarnation'
-        )
+        expect(mockStore.removeMatchingSshPtyCleanupLeases).not.toHaveBeenCalled()
       }
     } finally {
       warn.mockRestore()

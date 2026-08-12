@@ -2337,20 +2337,12 @@ export class SshRelaySession {
       deadlineMs: Date.now() + SSH_PTY_REATTACH_ATTEMPT_TIMEOUT_MS
     })
     const processById = new Map(inventory.map((process) => [process.id, process]))
+    const retirements: { lease: SshPtyLease; clearRouting: boolean }[] = []
     const retireCleanupLease = (lease: SshPtyLease, clearRouting: boolean): void => {
       if (!shouldContinue()) {
         return
       }
-      const retired = this.store.removeMatchingSshPtyCleanupLease(
-        this.targetId,
-        lease.ptyId,
-        lease.cleanupExpectedIncarnationId
-      )
-      if (retired && clearRouting) {
-        const appPtyId = toAppSshPtyId(this.targetId, lease.ptyId)
-        clearProviderPtyState(appPtyId)
-        deletePtyOwnership(appPtyId)
-      }
+      retirements.push({ lease, clearRouting })
     }
     let nextLeaseIndex = 0
     const worker = async (): Promise<void> => {
@@ -2400,6 +2392,29 @@ export class SshRelaySession {
     await Promise.all(
       Array.from({ length: Math.min(SSH_PTY_REATTACH_MAX_CONCURRENCY, leases.length) }, worker)
     )
+    if (!shouldContinue() || retirements.length === 0) {
+      return
+    }
+    const retired = this.store.removeMatchingSshPtyCleanupLeases(
+      this.targetId,
+      retirements.map(({ lease }) => ({
+        ptyId: lease.ptyId,
+        cleanupExpectedIncarnationId: lease.cleanupExpectedIncarnationId
+      }))
+    )
+    const retiredKeys = new Set(
+      retired.map((lease) => `${lease.ptyId}\0${lease.cleanupExpectedIncarnationId ?? ''}`)
+    )
+    for (const { lease, clearRouting } of retirements) {
+      if (
+        clearRouting &&
+        retiredKeys.has(`${lease.ptyId}\0${lease.cleanupExpectedIncarnationId ?? ''}`)
+      ) {
+        const appPtyId = toAppSshPtyId(this.targetId, lease.ptyId)
+        clearProviderPtyState(appPtyId)
+        deletePtyOwnership(appPtyId)
+      }
+    }
   }
 
   private async reattachKnownPty(args: {

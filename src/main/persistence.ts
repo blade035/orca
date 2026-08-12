@@ -7417,26 +7417,46 @@ export class Store {
     this.flush()
   }
 
-  removeMatchingSshPtyCleanupLease(
+  removeMatchingSshPtyCleanupLeases(
     targetId: string,
-    ptyId: string,
-    cleanupExpectedIncarnationId: string | undefined
-  ): boolean {
-    const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
-    const leases = this.state.sshRemotePtyLeases ?? []
-    const next = leases.filter(
-      (lease) =>
-        lease.targetId !== targetId ||
-        lease.ptyId !== relayPtyId ||
-        lease.cleanupPending !== true ||
-        lease.cleanupExpectedIncarnationId !== cleanupExpectedIncarnationId
+    candidates: readonly {
+      ptyId: string
+      cleanupExpectedIncarnationId?: string
+    }[]
+  ): { ptyId: string; cleanupExpectedIncarnationId?: string }[] {
+    const candidateByKey = new Map(
+      candidates.map((candidate) => {
+        const ptyId = this.getRelayPtyIdForSshLeaseStorage(targetId, candidate.ptyId)
+        return [
+          `${ptyId}\0${candidate.cleanupExpectedIncarnationId ?? ''}`,
+          { ptyId, cleanupExpectedIncarnationId: candidate.cleanupExpectedIncarnationId }
+        ]
+      })
     )
-    if (next.length === leases.length) {
+    if (candidateByKey.size === 0) {
+      return []
+    }
+    const leases = this.state.sshRemotePtyLeases ?? []
+    const retired: { ptyId: string; cleanupExpectedIncarnationId?: string }[] = []
+    const next = leases.filter((lease) => {
+      if (lease.targetId !== targetId || lease.cleanupPending !== true) {
+        return true
+      }
+      const candidate = candidateByKey.get(
+        `${lease.ptyId}\0${lease.cleanupExpectedIncarnationId ?? ''}`
+      )
+      if (!candidate) {
+        return true
+      }
+      retired.push(candidate)
       return false
+    })
+    if (retired.length === 0) {
+      return []
     }
     this.state.sshRemotePtyLeases = next
     this.flush()
-    return true
+    return retired
   }
 
   removeSshRemotePtyLease(targetId: string, ptyId: string): void {

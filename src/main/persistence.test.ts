@@ -10861,6 +10861,29 @@ describe('Store', () => {
     )
   })
 
+  it('retires matching SSH cleanup leases in one persistence flush', async () => {
+    const store = await createStore()
+    for (const ptyId of ['cleanup-a', 'cleanup-b']) {
+      store.upsertSshRemotePtyLease({
+        targetId: 'ssh-1',
+        ptyId,
+        cleanupPending: true,
+        cleanupExpectedIncarnationId: `incarnation-${ptyId}`,
+        state: 'attached'
+      })
+    }
+    const flush = vi.spyOn(store as unknown as { flush(): void }, 'flush')
+
+    const retired = store.removeMatchingSshPtyCleanupLeases('ssh-1', [
+      { ptyId: 'cleanup-a', cleanupExpectedIncarnationId: 'incarnation-cleanup-a' },
+      { ptyId: 'cleanup-b', cleanupExpectedIncarnationId: 'incarnation-cleanup-b' }
+    ])
+
+    expect(retired).toHaveLength(2)
+    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([])
+    expect(flush).toHaveBeenCalledOnce()
+  })
+
   it('rejects mismatched scoped SSH remote PTY lease ids on write paths', async () => {
     const store = await createStore()
 
