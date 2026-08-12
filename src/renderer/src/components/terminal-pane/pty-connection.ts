@@ -7306,10 +7306,7 @@ export function connectPanePty(
               shouldSkipAltFrameForWidthMismatch(snapshot.cols, readProposedTerminalCols(pane), {
                 skipIfTargetUnknown: true
               })
-            // Why: a success frame with no image is the host having nothing to say, not
-            // proof the pane is empty. The normal-buffer branch opens with
-            // \x1b[2J\x1b[3J\x1b[H, so applying it would wipe screen AND scrollback and
-            // leave exactly the blank pane this restore exists to repair.
+            // Why: an imageless success is not proof the pane is empty; normal replay clears screen and scrollback.
             const snapshotCarriesNoImage =
               snapshot.alternateScreen !== true && snapshot.data === '' && !snapshot.scrollbackAnsi
             if (!snapshotCarriesNoImage) {
