@@ -8842,9 +8842,12 @@ describe('registerPtyHandlers', () => {
         expect.objectContaining({
           targetId: connectionId,
           ptyId: 'rejected-split-pty',
+          worktreeId: 'repo-1::/remote/repo',
           state: 'attached'
         })
       )
+      expect(store.upsertSshRemotePtyLease.mock.calls[0]?.[0]).not.toHaveProperty('tabId')
+      expect(store.upsertSshRemotePtyLease.mock.calls[0]?.[0]).not.toHaveProperty('leafId')
       expect(warn).toHaveBeenCalledWith(
         '[pty] failed to clean up PTY after persistence failure:',
         expect.objectContaining({ message: 'injected remote shutdown failure' })
@@ -11635,7 +11638,21 @@ describe('registerPtyHandlers', () => {
       ).rejects.toThrow(/ORCA_TERMINAL_SESSION_STATE_SAVE_FAILED/)
 
       expect(remoteShutdown).toHaveBeenCalledWith(appPtyId, { immediate: true })
-      expect(store.upsertSshRemotePtyLease).not.toHaveBeenCalled()
+      expect(store.upsertSshRemotePtyLease).toHaveBeenCalledWith(
+        expect.objectContaining({
+          targetId: 'ssh-fresh-fail',
+          ptyId: 'relay-pty',
+          worktreeId: 'wt-remote',
+          state: 'attached'
+        })
+      )
+      expect(store.upsertSshRemotePtyLease.mock.calls[0]?.[0]).not.toHaveProperty('tabId')
+      expect(store.upsertSshRemotePtyLease.mock.calls[0]?.[0]).not.toHaveProperty('leafId')
+      expect(store.markSshRemotePtyLease).toHaveBeenCalledWith(
+        'ssh-fresh-fail',
+        'relay-pty',
+        'terminated'
+      )
       expect(store.removeSshRemotePtyLease).not.toHaveBeenCalled()
       expect(openCodeClearPtyMock).toHaveBeenCalledWith(appPtyId)
       expect(piClearPtyMock).toHaveBeenCalledWith(appPtyId)

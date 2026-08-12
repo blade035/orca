@@ -1110,6 +1110,23 @@ function finishPtyShutdown(
   return incarnationId
 }
 
+async function shutdownFreshPtyAfterBindingFailure(
+  provider: IPtyProvider,
+  id: string,
+  connectionId: string | null | undefined,
+  store: Store | undefined
+): Promise<void> {
+  try {
+    await provider.shutdown(id, { immediate: true })
+  } catch (error) {
+    if (!isPtyAlreadyGoneError(error)) {
+      console.warn('[pty] failed to clean up PTY after persistence failure:', error)
+      return
+    }
+  }
+  finishPtyShutdown(id, connectionId, store)
+}
+
 // ─── Host PTY env assembly ──────────────────────────────────────────
 // Why: centralize host-local env injections so both spawn paths (local + daemon) get them; implemented twice they drifted, silently breaking daemon PTYs.
 
@@ -5185,7 +5202,7 @@ export function registerPtyHandlers(
           markNativeWindowsConptyPty(result.id)
         }
         const relayResultId = getRelayPtyId(args.connectionId, result.id)
-        const persistSshLease = (): void => {
+        const persistSshLease = (includeSurfaceIdentity = true): void => {
           if (!store || !args.connectionId) {
             return
           }
@@ -5194,8 +5211,12 @@ export function registerPtyHandlers(
             targetId: args.connectionId,
             ptyId: relayResultId,
             ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
-            ...(typeof args.tabId === 'string' ? { tabId: args.tabId } : {}),
-            ...(typeof args.leafId === 'string' && isTerminalLeafId(args.leafId)
+            ...(includeSurfaceIdentity && typeof args.tabId === 'string'
+              ? { tabId: args.tabId }
+              : {}),
+            ...(includeSurfaceIdentity &&
+            typeof args.leafId === 'string' &&
+            isTerminalLeafId(args.leafId)
               ? { leafId: args.leafId }
               : {}),
             state: 'attached',
@@ -5244,13 +5265,14 @@ export function registerPtyHandlers(
           } catch (err) {
             console.error('[pty] failed to persist runtime PTY binding after spawn:', err)
             if (!result.isReattach) {
-              deletePtyOwnership(result.id)
-              try {
-                await provider.shutdown(result.id, { immediate: true })
-              } catch (shutdownErr) {
-                console.warn('[pty] failed to clean up PTY after persistence failure:', shutdownErr)
-              }
-              clearProviderPtyState(result.id)
+              // Why: retain durable cleanup authority without reconnect resurrecting the rejected pane.
+              persistSshLease(false)
+              await shutdownFreshPtyAfterBindingFailure(
+                provider,
+                result.id,
+                args.connectionId,
+                store
+              )
             }
             if (err instanceof Error && err.message === 'terminal_split_source_not_found') {
               throw err
@@ -6758,16 +6780,12 @@ export function registerPtyHandlers(
           } catch (err) {
             console.error('[pty] failed to persist PTY binding after spawn:', err)
             if (!result.isReattach) {
-              try {
-                await provider.shutdown(result.id, { immediate: true })
-              } catch (shutdownErr) {
-                console.warn('[pty] failed to clean up PTY after persistence failure:', shutdownErr)
-              }
-              clearProviderPtyState(result.id)
-              deletePtyOwnership(result.id)
-            }
-            if (!result.isReattach && args.connectionId && store) {
-              store.removeSshRemotePtyLease(args.connectionId, relayResultId)
+              await shutdownFreshPtyAfterBindingFailure(
+                provider,
+                result.id,
+                args.connectionId,
+                store
+              )
             }
             throw Object.assign(new Error(createTerminalSessionStateSaveFailureMessage()), {
               agentSessionOperationOutcome: 'unknown' as const
