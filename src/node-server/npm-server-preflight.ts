@@ -45,7 +45,7 @@ export function runNpmServerPreflight(argv: string[]): void {
 
 function readExpectedVersion(argv: string[]): string {
   const flagIndex = argv.indexOf('--expected-version')
-  const value = flagIndex >= 0 ? argv[flagIndex + 1] : undefined
+  const value = flagIndex !== -1 ? argv[flagIndex + 1] : undefined
   if (!value || !isExactNpmVersion(value)) {
     throw new Error('npm_preflight_expected_version_required')
   }
