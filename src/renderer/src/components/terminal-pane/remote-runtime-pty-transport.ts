@@ -1806,6 +1806,12 @@ export function createRemoteRuntimePtyTransport(
           markRecoveryHealthy()
           emitRecoveryState()
           storedCallbacks.onConnect?.()
+          // Why: a recovery subscribe replays nothing when the host's push snapshot is
+          // empty (idle or exited pane), so ask for the retained buffer instead of
+          // waiting for bytes that an exited process will never send.
+          if (expectedRecoveryEpoch !== undefined) {
+            storedCallbacks.onStreamRecovered?.()
+          }
           storedCallbacks.onStatus?.('shell')
         },
         onEnd: () => {
