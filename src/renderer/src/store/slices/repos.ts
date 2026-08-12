@@ -3437,6 +3437,15 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
 
       // Kill PTYs for all worktrees belonging to this repo
       const worktreeIds = getKnownRepoWorktreeIds(get(), projectId, ownerHostId)
+      const localAgentContextProjectIds =
+        ownerHostId === LOCAL_EXECUTION_HOST_ID
+          ? [
+              projectId,
+              ...(get().worktreesByRepo[projectId] ?? [])
+                .filter((worktree) => worktreeBelongsToHost(worktree, ownerHostId))
+                .flatMap((worktree) => (worktree.projectId ? [worktree.projectId] : []))
+            ]
+          : []
       const killedTabIds = new Set<string>()
       if (target.kind === 'environment') {
         await Promise.allSettled(
@@ -3464,6 +3473,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
 
       // Why: use the canonical per-worktree purge to evict all worktree-scoped maps (hand-deletion leaked most); runs before the set() below so it still sees tabsByWorktree.
       get().purgeWorktreeTerminalState(worktreeIds)
+      get().clearLocalDetectedAgentContextsForProjects(localAgentContextProjectIds)
 
       set((s) => {
         const nextWorktrees = { ...s.worktreesByRepo }
