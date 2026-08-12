@@ -162,6 +162,7 @@ describe('openWorkspaceBrowserTab', () => {
     const createBrowserTab = vi.fn()
     mocks.state = {
       ...ownerState(toRuntimeExecutionHostId('hub-a')),
+      ...browserCapableRuntime('hub-a'),
       createBrowserTab,
       defaultBrowserSessionProfileId: 'client-profile',
       defaultBrowserSessionProfileIdByHostId: {}
