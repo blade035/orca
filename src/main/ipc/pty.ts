@@ -5217,12 +5217,12 @@ export function registerPtyHandlers(
           markNativeWindowsConptyPty(result.id)
         }
         const relayResultId = getRelayPtyId(args.connectionId, result.id)
-        const persistSshLease = (cleanupPending = false): void => {
+        const persistSshLease = async (cleanupPending = false): Promise<void> => {
           if (!store || !args.connectionId) {
             return
           }
           // Why: SSH leases keep relay ids for remote reconciliation, while session bindings keep app-facing ids for hydration.
-          store.upsertSshRemotePtyLease({
+          const lease = {
             targetId: args.connectionId,
             ptyId: relayResultId,
             ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
@@ -5246,10 +5246,15 @@ export function registerPtyHandlers(
               : {}),
             state: 'attached',
             lastAttachedAt: Date.now()
-          })
+          } as const
+          if (cleanupPending) {
+            await store.upsertSshPtyCleanupLeaseAsync({ ...lease, cleanupPending: true })
+          } else {
+            store.upsertSshRemotePtyLease(lease)
+          }
         }
         if (!hostSessionBinding) {
-          persistSshLease()
+          await persistSshLease()
         }
         ptySizes.set(result.id, { cols: args.cols, rows: args.rows })
         if (effectiveSessionAppId !== undefined && effectiveSessionAppId !== result.id) {
@@ -5291,7 +5296,7 @@ export function registerPtyHandlers(
             console.error('[pty] failed to persist runtime PTY binding after spawn:', err)
             if (!result.isReattach) {
               // Why: retain durable cleanup authority without reconnect resurrecting the rejected pane.
-              persistSshLease(true)
+              await persistSshLease(true)
               await shutdownFreshPtyAfterBindingFailure(
                 provider,
                 result.id,
@@ -5306,7 +5311,7 @@ export function registerPtyHandlers(
               agentSessionOperationOutcome: 'unknown' as const
             })
           }
-          persistSshLease()
+          await persistSshLease()
         }
         if (args.preAllocatedHandle && !stablePaneOwner?.handle) {
           runtime?.registerPreAllocatedHandleForPty(result.id, args.preAllocatedHandle)
@@ -6813,7 +6818,7 @@ export function registerPtyHandlers(
             console.error('[pty] failed to persist PTY binding after spawn:', err)
             if (!result.isReattach) {
               if (store && args.connectionId) {
-                store.upsertSshRemotePtyLease({
+                await store.upsertSshPtyCleanupLeaseAsync({
                   targetId: args.connectionId,
                   ptyId: relayResultId,
                   ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),

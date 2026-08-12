@@ -10879,9 +10879,9 @@ describe('Store', () => {
       cleanupExpectedIncarnationId: 'new-incarnation',
       state: 'attached'
     })
-    const flush = vi.spyOn(store as unknown as { flush(): void }, 'flush')
+    const flush = vi.spyOn(store, 'flushOrThrow')
 
-    const retired = store.removeMatchingSshPtyCleanupLeases('ssh-1', [
+    const retired = await store.removeMatchingSshPtyCleanupLeasesAsync('ssh-1', [
       { ptyId: 'cleanup-a', cleanupExpectedIncarnationId: 'incarnation-cleanup-a' },
       { ptyId: 'cleanup-b', cleanupExpectedIncarnationId: 'incarnation-cleanup-b' },
       {
@@ -10898,6 +10898,82 @@ describe('Store', () => {
       })
     ])
     expect(flush).toHaveBeenCalledOnce()
+  })
+
+  it('retains SSH cleanup authority when its durability barrier fails', async () => {
+    const store = await createStore()
+    vi.spyOn(store, 'flushOrThrow').mockImplementationOnce(() => {
+      throw new Error('disk unavailable')
+    })
+
+    await expect(
+      store.upsertSshPtyCleanupLeaseAsync({
+        targetId: 'ssh-1',
+        ptyId: 'cleanup-a',
+        cleanupPending: true,
+        cleanupExpectedIncarnationId: 'incarnation-a',
+        state: 'attached'
+      })
+    ).rejects.toThrow('disk unavailable')
+
+    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([
+      expect.objectContaining({
+        ptyId: 'cleanup-a',
+        cleanupPending: true,
+        cleanupExpectedIncarnationId: 'incarnation-a'
+      })
+    ])
+  })
+
+  it('rolls back failed SSH cleanup retirement without overwriting a replacement', async () => {
+    const store = await createStore()
+    store.upsertSshRemotePtyLease({
+      targetId: 'ssh-1',
+      ptyId: 'cleanup-a',
+      cleanupPending: true,
+      cleanupExpectedIncarnationId: 'incarnation-a',
+      state: 'attached'
+    })
+    const retirementFlushSpy = vi.spyOn(store, 'flushOrThrow').mockImplementationOnce(() => {
+      throw new Error('disk unavailable')
+    })
+
+    await expect(
+      store.removeMatchingSshPtyCleanupLeasesAsync('ssh-1', [
+        { ptyId: 'cleanup-a', cleanupExpectedIncarnationId: 'incarnation-a' }
+      ])
+    ).rejects.toThrow('disk unavailable')
+    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([
+      expect.objectContaining({
+        ptyId: 'cleanup-a',
+        cleanupExpectedIncarnationId: 'incarnation-a'
+      })
+    ])
+
+    retirementFlushSpy.mockRestore()
+    vi.spyOn(store, 'flushOrThrow').mockImplementationOnce(() => {
+      store.upsertSshRemotePtyLease({
+        targetId: 'ssh-1',
+        ptyId: 'cleanup-a',
+        cleanupPending: true,
+        cleanupExpectedIncarnationId: 'incarnation-new',
+        state: 'attached'
+      })
+      throw new Error('disk unavailable')
+    })
+
+    await expect(
+      store.removeMatchingSshPtyCleanupLeasesAsync('ssh-1', [
+        { ptyId: 'cleanup-a', cleanupExpectedIncarnationId: 'incarnation-a' }
+      ])
+    ).rejects.toThrow('disk unavailable')
+
+    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([
+      expect.objectContaining({
+        ptyId: 'cleanup-a',
+        cleanupExpectedIncarnationId: 'incarnation-new'
+      })
+    ])
   })
 
   it('rejects mismatched scoped SSH remote PTY lease ids on write paths', async () => {

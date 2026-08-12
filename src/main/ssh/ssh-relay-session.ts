@@ -2352,17 +2352,17 @@ export class SshRelaySession {
           return
         }
         const appPtyId = toAppSshPtyId(this.targetId, lease.ptyId)
-        const process = processById.get(appPtyId)
-        if (!process) {
+        const listedPty = processById.get(appPtyId)
+        if (!listedPty) {
           retireCleanupLease(lease, true)
           continue
         }
         if (
           !lease.cleanupExpectedIncarnationId ||
-          !process.incarnationId ||
-          process.incarnationId !== lease.cleanupExpectedIncarnationId
+          !listedPty.incarnationId ||
+          listedPty.incarnationId !== lease.cleanupExpectedIncarnationId
         ) {
-          if (process.incarnationId && lease.cleanupExpectedIncarnationId) {
+          if (listedPty.incarnationId && lease.cleanupExpectedIncarnationId) {
             retireCleanupLease(lease, false)
           } else {
             console.warn(
@@ -2395,7 +2395,7 @@ export class SshRelaySession {
     if (!shouldContinue() || retirements.length === 0) {
       return
     }
-    const retired = this.store.removeMatchingSshPtyCleanupLeases(
+    const retired = await this.store.removeMatchingSshPtyCleanupLeasesAsync(
       this.targetId,
       retirements.map(({ lease }) => ({
         ptyId: lease.ptyId,

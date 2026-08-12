@@ -642,12 +642,14 @@ describe('SshRelaySession reconnect incarnation ordering', () => {
     await session.establish(mockConn)
 
     expect(mockAttach).not.toHaveBeenCalled()
-    expect(mockShutdown).toHaveBeenCalledWith(
-      'ssh:target-1@@cleanup-pty',
-      expect.objectContaining({ immediate: true, deadlineMs: expect.any(Number) })
+    await vi.waitFor(() =>
+      expect(mockShutdown).toHaveBeenCalledWith(
+        'ssh:target-1@@cleanup-pty',
+        expect.objectContaining({ immediate: true, deadlineMs: expect.any(Number) })
+      )
     )
     await vi.waitFor(() =>
-      expect(mockStore.removeMatchingSshPtyCleanupLeases).toHaveBeenCalledWith('target-1', [
+      expect(mockStore.removeMatchingSshPtyCleanupLeasesAsync).toHaveBeenCalledWith('target-1', [
         { ptyId: 'cleanup-pty', cleanupExpectedIncarnationId: 'cleanup-incarnation' }
       ])
     )
@@ -695,8 +697,13 @@ describe('SshRelaySession reconnect incarnation ordering', () => {
 
     try {
       await session.establish(mockConn)
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('cleanup retry failed for target-1')
+        )
+      )
       expect(shutdown).toHaveBeenCalledOnce()
-      expect(mockStore.removeMatchingSshPtyCleanupLeases).not.toHaveBeenCalled()
+      expect(mockStore.removeMatchingSshPtyCleanupLeasesAsync).not.toHaveBeenCalled()
       expect(runtime.onPtySpawned).not.toHaveBeenCalled()
       expect(runtime.registerPty).not.toHaveBeenCalled()
     } finally {
@@ -743,16 +750,22 @@ describe('SshRelaySession reconnect incarnation ordering', () => {
 
     try {
       await session.establish(mockConn)
-      expect(shutdown).not.toHaveBeenCalled()
       if (terminates) {
         await vi.waitFor(() =>
-          expect(mockStore.removeMatchingSshPtyCleanupLeases).toHaveBeenCalledWith('target-1', [
-            { ptyId: 'cleanup-pty', cleanupExpectedIncarnationId: 'expected-incarnation' }
-          ])
+          expect(mockStore.removeMatchingSshPtyCleanupLeasesAsync).toHaveBeenCalledWith(
+            'target-1',
+            [{ ptyId: 'cleanup-pty', cleanupExpectedIncarnationId: 'expected-incarnation' }]
+          )
         )
       } else {
-        expect(mockStore.removeMatchingSshPtyCleanupLeases).not.toHaveBeenCalled()
+        await vi.waitFor(() =>
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining('cleanup retry lacks incarnation proof for target-1')
+          )
+        )
+        expect(mockStore.removeMatchingSshPtyCleanupLeasesAsync).not.toHaveBeenCalled()
       }
+      expect(shutdown).not.toHaveBeenCalled()
     } finally {
       warn.mockRestore()
     }
