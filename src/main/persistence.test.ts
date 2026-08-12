@@ -10863,7 +10863,7 @@ describe('Store', () => {
 
   it('retires matching SSH cleanup leases in one persistence flush', async () => {
     const store = await createStore()
-    for (const ptyId of ['cleanup-a', 'cleanup-b']) {
+    for (const ptyId of ['cleanup-a', 'cleanup-b', 'cleanup-replaced']) {
       store.upsertSshRemotePtyLease({
         targetId: 'ssh-1',
         ptyId,
@@ -10872,15 +10872,31 @@ describe('Store', () => {
         state: 'attached'
       })
     }
+    store.upsertSshRemotePtyLease({
+      targetId: 'ssh-1',
+      ptyId: 'cleanup-replaced',
+      cleanupPending: true,
+      cleanupExpectedIncarnationId: 'new-incarnation',
+      state: 'attached'
+    })
     const flush = vi.spyOn(store as unknown as { flush(): void }, 'flush')
 
     const retired = store.removeMatchingSshPtyCleanupLeases('ssh-1', [
       { ptyId: 'cleanup-a', cleanupExpectedIncarnationId: 'incarnation-cleanup-a' },
-      { ptyId: 'cleanup-b', cleanupExpectedIncarnationId: 'incarnation-cleanup-b' }
+      { ptyId: 'cleanup-b', cleanupExpectedIncarnationId: 'incarnation-cleanup-b' },
+      {
+        ptyId: 'cleanup-replaced',
+        cleanupExpectedIncarnationId: 'incarnation-cleanup-replaced'
+      }
     ])
 
     expect(retired).toHaveLength(2)
-    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([])
+    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([
+      expect.objectContaining({
+        ptyId: 'cleanup-replaced',
+        cleanupExpectedIncarnationId: 'new-incarnation'
+      })
+    ])
     expect(flush).toHaveBeenCalledOnce()
   })
 
