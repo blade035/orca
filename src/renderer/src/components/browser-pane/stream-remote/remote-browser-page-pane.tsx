@@ -358,8 +358,10 @@ export function RemoteBrowserPagePane({
             void openWorkspaceBrowserTab({
               workspaceId: worktreeId,
               url: linkUrl,
+              focusOnCreate: false,
               intent: { kind: 'url' },
-              expectedRuntimeEnvironmentId: runtimeEnvironmentId
+              expectedRuntimeEnvironmentId: runtimeEnvironmentId,
+              placementPreference: 'server'
             }).catch((error) => {
               setPaneNotice({
                 kind: 'direct',

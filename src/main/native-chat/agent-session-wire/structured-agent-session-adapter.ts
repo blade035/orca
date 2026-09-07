@@ -17,7 +17,9 @@ import type {
   AgentSessionProcessIdentity
 } from '../../../shared/agent-session-record'
 import type {
+  AgentSessionBackgroundTaskState,
   AgentSessionOptionsResult,
+  AgentSessionSlashCommand,
   AgentSessionWireRefusalCode
 } from '../../../shared/agent-session-wire'
 import type { StructuredAgentSessionEventSink } from './structured-agent-session-event-sink'
@@ -29,6 +31,20 @@ export class AgentSessionAcquisitionRefusal extends Error {
   ) {
     super(message)
     this.name = 'AgentSessionAcquisitionRefusal'
+  }
+}
+
+/**
+ * The provider's own root process was observed to exit, but its descendant tree
+ * could not be verified. The lease keys on the root's pid and start time, so its
+ * observed death releases the reservation; nothing is claimed about descendants.
+ * Never thrown when a descendant was observed still alive — that stays unproven.
+ */
+export class AgentSessionAcquisitionRootExitObservedError extends Error {
+  constructor(cause: unknown) {
+    // The provider's own diagnostic is the only thing the user can act on.
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'AgentSessionAcquisitionRootExitObservedError'
   }
 }
 
@@ -44,9 +60,12 @@ export class AgentSessionAcquisitionExitUnprovenError extends Error {
 export type AgentSessionAcquisition = {
   process: AgentSessionProcessIdentity
   link: AgentSessionProviderHandleLink
+  /** Host-local identity for this exact provider child, distinct even when the durable fence is
+   *  reused by a superseding acquisition. */
+  acquisitionGeneration?: string
 }
 
-/** Acquisition validation failed before the adapter attempted to spawn. */
+/** Acquisition failed with first-hand proof that no provider process existed. */
 export class AgentSessionPreSpawnError extends Error {
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause), { cause })
@@ -64,6 +83,17 @@ export type AgentSessionDispatchOutcome =
   | { state: 'rejected'; reason: string }
   /** The call did not settle. Never re-send on the user's behalf. */
   | { state: 'unknown'; reason: string }
+
+export type StructuredAgentSessionLifecycleEvent = {
+  type: 'ended'
+  sessionId: string
+  reason: string
+  cause: 'unexpected-exit' | 'requested-close'
+  fence: number
+  acquisitionGeneration: string
+  /** Translator could not admit terminal rows; host recovery must append its bounded fallback. */
+  settlementRetryRequired?: boolean
+}
 
 export type StructuredAgentSessionAcquireInput = {
   identity: AgentSessionJournalIdentity
@@ -91,7 +121,9 @@ export type StructuredAgentSessionAdapter = {
    *  at — the store rejects a link minted at any other fence. */
   acquire(input: StructuredAgentSessionAcquireInput): Promise<AgentSessionAcquisition>
   /** Reaps an acquired provider when the host cannot commit or prove its lease.
-   *  Returns true only after provider child exit is proven. */
+   *  Returns true only after provider child exit is proven. Throws
+   *  `AgentSessionAcquisitionRootExitObservedError` when the provider root's own
+   *  exit was observed first-hand but its descendants could not be verified. */
   releaseAcquisition?(input: { sessionId: string }): Promise<boolean>
   dispatch(input: {
     sessionId: string
@@ -99,6 +131,12 @@ export type StructuredAgentSessionAdapter = {
     body: AgentJournalMessageItem
     fence: number
   }): Promise<AgentSessionDispatchOutcome>
+  compact?(input: {
+    turnId: string
+    sessionId: string
+    fence: number
+    onLateResult?: (result: { error?: string }) => Promise<void>
+  }): Promise<{ error?: string }>
   /** Cancels one turn, not the session: a session-wide interrupt would also kill
    *  a turn the client never asked to stop. */
   cancelTurn(input: {
@@ -106,6 +144,15 @@ export type StructuredAgentSessionAdapter = {
     turnId: string
     fence: number
   }): Promise<{ cancelled: boolean }>
+  stopBackgroundTasks?(input: {
+    sessionId: string
+    fence: number
+    taskId?: string
+  }): Promise<{ cancelled: boolean }>
+  backgroundTaskState?(sessionId: string): AgentSessionBackgroundTaskState | null | undefined
+  /** The `/` surface the running provider reports for itself. Undefined when the
+   *  provider never reports one, which is what keeps the client on its catalog. */
+  readCommands?(sessionId: string): AgentSessionSlashCommand[] | undefined
   /** Fires the provider callback for an approval or a question. The wire calls
    *  this only after the durable compare-and-set won, so it runs exactly once. */
   answerPrompt(input: {
@@ -119,12 +166,16 @@ export type StructuredAgentSessionAdapter = {
     input: StructuredAgentSessionSetOptionInput
   ): Promise<void | Readonly<Record<string, string>>>
   readOptions?(input: { sessionId: string; fence: number }): Promise<AgentSessionOptionsResult>
+  /** Option keys skipped after a provider rejected their persisted restore value. */
+  readOptionRestoreFailures?(sessionId: string): readonly string[]
   /** Transcript path for journal recovery. Omit to let the existing session-file
    *  resolver discover it from the provider session id. */
   historyFilePath?(input: { identity: AgentSessionJournalIdentity }): Promise<string | null>
   /** Gracefully stops the structured owner after its event stream is drained. */
   /** Returns true only after the provider child exit is proven. */
   closeSession?(sessionId: string): Promise<boolean>
+  /** Stops a provider after a sink failure; the resulting exit is recovered as unexpected. */
+  forceCloseSession?(sessionId: string): Promise<boolean>
   /** Stops a provider child for teardown without requiring a future-resume cursor. */
   disposeSession?(sessionId: string): Promise<boolean>
 }
@@ -138,9 +189,15 @@ export async function rethrowAfterAgentSessionAcquisitionCleanup(
   try {
     released = (await adapter.releaseAcquisition?.({ sessionId })) === true
   } catch (cleanupError) {
-    throw new AgentSessionAcquisitionExitUnprovenError(
-      new AggregateError([cause, cleanupError], 'agent session acquisition cleanup failed')
-    )
+    // A root exit the cleanup observed first-hand keeps its classification and its
+    // provider diagnostic; the failure that triggered cleanup rides along as cause.
+    throw cleanupError instanceof AgentSessionAcquisitionRootExitObservedError
+      ? new AgentSessionAcquisitionRootExitObservedError(
+          new AggregateError([cause, cleanupError], cleanupError.message)
+        )
+      : new AgentSessionAcquisitionExitUnprovenError(
+          new AggregateError([cause, cleanupError], 'agent session acquisition cleanup failed')
+        )
   }
   if (released) {
     throw cause
