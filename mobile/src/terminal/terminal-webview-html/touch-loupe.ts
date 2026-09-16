@@ -198,8 +198,10 @@ export const TERMINAL_HTML_TOUCH_LOUPE = `
         }
         var x = j * zoomW;
         var y = i * zoomH;
+        // Why: a wide char's background and decorations span both of its cells.
+        var drawW = Math.min(width, LOUPE_COLS - j) * zoomW;
         loupeCtx.fillStyle = loupeCss(bg);
-        loupeCtx.fillRect(x, y, zoomW, zoomH);
+        loupeCtx.fillRect(x, y, drawW, zoomH);
         var chars = cell.getChars ? cell.getChars() : '';
         if (chars && !(cell.isInvisible && cell.isInvisible())) {
           loupeCtx.font = loupeFont(zoomH, !!(cell.isBold && cell.isBold()), !!(cell.isItalic && cell.isItalic()));
@@ -212,11 +214,11 @@ export const TERMINAL_HTML_TOUCH_LOUPE = `
         var decoWeight = Math.max(1, Math.round(zoomH / 15));
         if (cell.isUnderline && cell.isUnderline()) {
           loupeCtx.fillStyle = loupeCss(fg);
-          loupeCtx.fillRect(x, y + zoomH - decoWeight, zoomW, decoWeight);
+          loupeCtx.fillRect(x, y + zoomH - decoWeight, drawW, decoWeight);
         }
         if (cell.isStrikethrough && cell.isStrikethrough()) {
           loupeCtx.fillStyle = loupeCss(fg);
-          loupeCtx.fillRect(x, y + zoomH / 2 - decoWeight / 2, zoomW, decoWeight);
+          loupeCtx.fillRect(x, y + zoomH / 2 - decoWeight / 2, drawW, decoWeight);
         }
       }
     }
@@ -243,8 +245,8 @@ export const TERMINAL_HTML_TOUCH_LOUPE = `
     if (total <= 0) total = 1;
     var fracX = ((loupePoint.x - panX) / total) / cellW - center.col;
     var fracY = ((loupePoint.y - panY) / total) / cellH - (center.row - buffer.viewportY);
-    var crossX = (center.col - region.startCol + 0.5 + fracX) * zoomW;
-    var crossY = (center.row - region.startRow + 0.5 + fracY) * zoomH;
+    var crossX = (center.col - region.startCol + fracX) * zoomW;
+    var crossY = (center.row - region.startRow + fracY) * zoomH;
     if (crossX >= 0 && crossX <= w && crossY >= 0 && crossY <= h) {
       loupeCtx.fillStyle = loupeCss(accentRgb);
       loupeCtx.fillRect(crossX - zoomW / 2, crossY - 0.5, zoomW, 1);

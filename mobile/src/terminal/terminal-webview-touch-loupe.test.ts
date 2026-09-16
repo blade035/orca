@@ -117,6 +117,10 @@ function makeTerminal(state: TerminalState) {
 
 type CtxCall = { op: string; args: unknown[]; fillStyle: unknown }
 
+// Why: one registry for every listener the injected document installs across
+// boots; afterEach drains it so each test starts from a listener-free document.
+const activeListenerRemovals: Array<() => void> = []
+
 type LoupeHarness = {
   ctxCalls: CtxCall[]
   fillTextChars: () => string[]
@@ -181,7 +185,48 @@ function bootLoupeHarness(lines: string[], patches: CellPatches = {}): LoupeHarn
     }
   })
   document.body.innerHTML = bodyMarkup()
+  // Why: the injected document installs persistent document/window listeners;
+  // record them so afterEach can detach every boot's closures — otherwise later
+  // tests dispatch events into stale boots and results depend on test order.
+  const originalDocAdd = document.addEventListener
+  const originalWinAdd = window.addEventListener
+  Object.defineProperty(document, 'addEventListener', {
+    value: (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions
+    ) => {
+      activeListenerRemovals.push(() => document.removeEventListener(type, listener, options))
+      originalDocAdd.call(document, type, listener, options)
+    },
+    configurable: true,
+    writable: true
+  })
+  Object.defineProperty(window, 'addEventListener', {
+    value: (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions
+    ) => {
+      activeListenerRemovals.push(() => window.removeEventListener(type, listener, options))
+      originalWinAdd.call(window, type, listener, options)
+    },
+    configurable: true,
+    writable: true
+  })
+  // Why: evaluates the repo's own generated WebView source verbatim; the input
+  // is a build artifact, never user-controlled data.
   new Function(iifeSource())()
+  Object.defineProperty(document, 'addEventListener', {
+    value: originalDocAdd,
+    configurable: true,
+    writable: true
+  })
+  Object.defineProperty(window, 'addEventListener', {
+    value: originalWinAdd,
+    configurable: true,
+    writable: true
+  })
   window.dispatchEvent(
     new MessageEvent('message', {
       data: JSON.stringify({ type: 'init', cols: 80, rows: 24, initialData: '' })
@@ -233,9 +278,8 @@ function requireEl(id: string): HTMLElement {
 }
 
 function requireSurface(): HTMLElement {
-  // Why: earlier IIFE boots leave live message listeners that re-init on this
-  // boot's init message and append their own surfaces first; the current
-  // closure's surface is always the container's last child.
+  // Why: a re-init inside the current boot appends a fresh surface while the
+  // previous one is still attached; this closure's surface is the last child.
   const el = document.querySelector('#terminal-container > div:last-child')
   if (!(el instanceof HTMLElement)) {
     throw new Error('terminal surface missing')
@@ -262,6 +306,7 @@ describe('terminal WebView touch loupe', () => {
   })
 
   afterEach(() => {
+    activeListenerRemovals.splice(0).forEach((remove) => remove())
     if (originalGetContextDescriptor) {
       Object.defineProperty(
         window.HTMLCanvasElement.prototype,
@@ -416,6 +461,13 @@ describe('terminal WebView touch loupe', () => {
     await vi.waitFor(() => expect(h.loupeEl().style.display).toBe('block'))
     h.flushFrames()
     expect(h.fillTextChars().filter((c) => c === '漢')).toHaveLength(1)
+    // The wide cell's background and decorations span both columns (2 zoomed cells).
+    expect(h.ctxCalls.some((c) => c.op === 'fillRect' && c.args.join(',') === '80,60,32,30')).toBe(
+      true
+    )
+    expect(h.ctxCalls.some((c) => c.op === 'fillRect' && c.args.join(',') === '80,60,16,30')).toBe(
+      false
+    )
     h.fireTouch('touchend', [])
   })
 
@@ -435,6 +487,32 @@ describe('terminal WebView touch loupe', () => {
           c.op === 'fillRect' &&
           c.fillStyle === 'rgb(192,202,245)' &&
           c.args.join(',') === '48,60,2,30'
+      )
+    ).toBe(true)
+    h.fireTouch('touchend', [])
+  })
+
+  it('centers the crosshair on the exact finger point (sub-cell)', async () => {
+    const h = bootLoupeHarness(Array.from({ length: 40 }, (_, r) => `row ${r} alpha beta`))
+    // Finger at col 3.5, row 12.5 → region cols 0-16, rows 10-14, zoom cell 16x30.
+    h.fireTouch('touchstart', [{ x: xForCol(3.5), y: yForRow(12.5) }])
+    await vi.waitFor(() => expect(h.loupeEl().style.display).toBe('block'))
+    h.flushFrames()
+    // Arms meet at ((3.5 - 0) * 16, (12.5 - 10) * 30) = (56, 75): no half-cell drift.
+    expect(
+      h.ctxCalls.some(
+        (c) =>
+          c.op === 'fillRect' &&
+          c.fillStyle === 'rgb(192,202,245)' &&
+          c.args.join(',') === '48,74.5,16,1'
+      )
+    ).toBe(true)
+    expect(
+      h.ctxCalls.some(
+        (c) =>
+          c.op === 'fillRect' &&
+          c.fillStyle === 'rgb(192,202,245)' &&
+          c.args.join(',') === '55.5,60,1,30'
       )
     ).toBe(true)
     h.fireTouch('touchend', [])
