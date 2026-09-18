@@ -189,20 +189,20 @@ function stubPointerEnvironment(environment: PointerEnvironment): void {
     } else if (originalKeyboardDescriptor) {
       Object.defineProperty(window.navigator, 'keyboard', originalKeyboardDescriptor)
     } else {
-      delete (window.navigator as { keyboard?: unknown }).keyboard
+      Reflect.deleteProperty(window.navigator, 'keyboard')
     }
   }
 }
 
 function restorePointerEnvironment(): void {
-  delete (window.navigator as { userAgent?: string }).userAgent
+  Reflect.deleteProperty(window.navigator, 'userAgent')
   if (originalUserAgentDescriptor) {
     Object.defineProperty(window.navigator, 'userAgent', originalUserAgentDescriptor)
   }
   if (originalKeyboardDescriptor) {
     Object.defineProperty(window.navigator, 'keyboard', originalKeyboardDescriptor)
   } else {
-    delete (window.navigator as { keyboard?: unknown }).keyboard
+    Reflect.deleteProperty(window.navigator, 'keyboard')
   }
   originalUserAgentDescriptor = undefined
   originalKeyboardDescriptor = undefined
