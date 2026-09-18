@@ -162,15 +162,12 @@ function dispatchContextMenu(x: number, y: number): MouseEvent {
 }
 
 // Why: the injected mouse code gates keyboard focus on navigator.userAgent
-// ("Android") and navigator.keyboard (present only with a hardware keyboard in
-// Chromium). happy-dom's defaults say neither, so tests steer both explicitly.
+// ("Android"). happy-dom's default UA is not Android, so tests steer it.
 type PointerEnvironment = {
   userAgent?: string
-  hardwareKeyboard?: boolean
 }
 
 let originalUserAgentDescriptor: PropertyDescriptor | undefined
-let originalKeyboardDescriptor: PropertyDescriptor | undefined
 
 function stubPointerEnvironment(environment: PointerEnvironment): void {
   if (environment.userAgent !== undefined) {
@@ -182,16 +179,6 @@ function stubPointerEnvironment(environment: PointerEnvironment): void {
       configurable: true
     })
   }
-  if (environment.hardwareKeyboard !== undefined) {
-    originalKeyboardDescriptor ??= Object.getOwnPropertyDescriptor(window.navigator, 'keyboard')
-    if (environment.hardwareKeyboard) {
-      Object.defineProperty(window.navigator, 'keyboard', { value: {}, configurable: true })
-    } else if (originalKeyboardDescriptor) {
-      Object.defineProperty(window.navigator, 'keyboard', originalKeyboardDescriptor)
-    } else {
-      Reflect.deleteProperty(window.navigator, 'keyboard')
-    }
-  }
 }
 
 function restorePointerEnvironment(): void {
@@ -199,13 +186,7 @@ function restorePointerEnvironment(): void {
   if (originalUserAgentDescriptor) {
     Object.defineProperty(window.navigator, 'userAgent', originalUserAgentDescriptor)
   }
-  if (originalKeyboardDescriptor) {
-    Object.defineProperty(window.navigator, 'keyboard', originalKeyboardDescriptor)
-  } else {
-    Reflect.deleteProperty(window.navigator, 'keyboard')
-  }
   originalUserAgentDescriptor = undefined
-  originalKeyboardDescriptor = undefined
 }
 
 function postedMessages(postMessage: PostMessage): Record<string, unknown>[] {

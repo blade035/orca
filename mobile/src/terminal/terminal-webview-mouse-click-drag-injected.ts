@@ -22,12 +22,14 @@ export const TERMINAL_MOUSE_CLICK_DRAG_JS = `
 
   // Why: touch taps raise the soft keyboard via the terminal-tap notify, but a
   // mouse click historically could not (protecting iPad + hardware keyboard,
-  // #12772). Rule: raise it only on Android devices with no hardware keyboard —
-  // Chromium exposes navigator.keyboard only when one is attached, and iPadOS
-  // never matches an Android UA. Read per click so plugging a keyboard in
-  // mid-session takes effect immediately.
+  // #12772). Rule: raise it on Android only — iPadOS never matches an Android
+  // UA. There is no WebView-visible hardware-keyboard probe (navigator.keyboard
+  // is SecureContext-gated and this document loads without a baseUrl, so it is
+  // undefined on every Android device), so whether the soft IME actually opens
+  // over a hardware keyboard is the OS's call — Android keeps it closed while
+  // it sees one active, and focus lands either way, so keystrokes flow.
   function shouldMouseTapFocusKeyboard() {
-    return /Android/i.test(navigator.userAgent) && typeof navigator.keyboard === 'undefined';
+    return /Android/i.test(navigator.userAgent);
   }
 
   var DOUBLE_CLICK_MS = 350;
@@ -76,6 +78,9 @@ export const TERMINAL_MOUSE_CLICK_DRAG_JS = `
     var gesture = mouseGesture;
     mouseGesture = null;
     if (!gesture) return;
+    // Why: a cancelled left gesture was never a dispatched tap, so it must not
+    // pair with a later tap into a double click.
+    if (gesture.button === 0) lastLeftClick = null;
     if (gesture.mode === 'tracking') {
       // Why: the press report already went to the TUI; a lost pointer must not
       // leave the button latched down on the far side.
@@ -89,6 +94,10 @@ export const TERMINAL_MOUSE_CLICK_DRAG_JS = `
 
   function beginMouseDrag(gesture) {
     gesture.moved = true;
+    // Why: once a left gesture becomes a drag it is no longer a tap; leaving the
+    // prior tap armed would let drag-then-tap masquerade as a double click (and
+    // eat the user's next genuine one).
+    if (gesture.button === 0) lastLeftClick = null;
     // Why: the right button is the selection override — desktop terminals offer
     // Shift+drag to select over a mouse-tracking TUI, but touch hardware has no
     // Shift; the right button is always available and never reported to the TUI.

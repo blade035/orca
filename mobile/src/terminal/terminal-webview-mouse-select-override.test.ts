@@ -104,4 +104,37 @@ describe('terminal WebView mouse selection overrides', () => {
     expect(modes.at(-1)).toEqual({ type: 'set-select-mode', enabled: true })
     expect(document.getElementById('selection-overlay')?.classList.contains('active')).toBe(true)
   })
+
+  it('does not double-click a tap that follows a cancelled gesture', () => {
+    mouse.boot()
+    mouse.mouseClick(40, 60)
+    mouse.clearPostedMessages()
+
+    mouse.dispatchPointer('pointerdown', { x: 40, y: 60, button: 0, buttons: 1 })
+    mouse.dispatchPointer('pointercancel')
+    mouse.mouseClick(40, 60)
+
+    expect(mouse.postedMessages().filter((message) => message.type === 'set-select-mode')).toEqual(
+      []
+    )
+    expect(mouse.selectionSpy()).not.toHaveBeenCalled()
+    expect(
+      mouse.postedMessages().filter((message) => message.type === 'terminal-tap')
+    ).toHaveLength(1)
+  })
+
+  it('pairs only clean taps when a drag intervenes between clicks', () => {
+    mouse.boot()
+    mouse.mouseClick(40, 60)
+    mouse.mouseDrag(40, 60, 160, 90)
+    mouse.clearPostedMessages()
+
+    // 48,64 is within DOUBLE_CLICK_SLOP of the pre-drag tap, so a stale pair
+    // would eat the first of these clicks and the double click would die.
+    mouse.mouseClick(48, 64)
+    mouse.mouseClick(48, 64)
+
+    expect(mouse.postedMessages()).toContainEqual({ type: 'set-select-mode', enabled: true })
+    expect(mouse.selectionSpy()).toHaveBeenCalled()
+  })
 })

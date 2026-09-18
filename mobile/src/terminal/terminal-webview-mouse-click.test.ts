@@ -46,13 +46,12 @@ describe('terminal WebView external mouse click', () => {
     expect(mouse.terminalInputBytes()).toBe('')
   })
 
-  it('raises the keyboard for a mouse click on Android without a hardware keyboard, even inside a click-tracking TUI', () => {
+  it('raises the keyboard for a mouse click on Android, even inside a click-tracking TUI', () => {
     mouse.boot()
     mouse.activeTerminal().modes.mouseTrackingMode = 'vt200'
     mouse.stubPointerEnvironment({
       userAgent:
-        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-      hardwareKeyboard: false
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
     })
 
     mouse.mouseClick(40, 60)
@@ -71,21 +70,6 @@ describe('terminal WebView external mouse click', () => {
     mouse.stubPointerEnvironment({
       userAgent:
         'Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1'
-    })
-
-    mouse.mouseClick(40, 60)
-
-    expect(mouse.terminalInputBytes()).not.toBe('')
-    expect(mouse.postedMessages().filter((message) => message.type === 'terminal-tap')).toEqual([])
-  })
-
-  it('keeps mouse clicks silent on Android when a hardware keyboard is attached', () => {
-    mouse.boot()
-    mouse.activeTerminal().modes.mouseTrackingMode = 'vt200'
-    mouse.stubPointerEnvironment({
-      userAgent:
-        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-      hardwareKeyboard: true
     })
 
     mouse.mouseClick(40, 60)
