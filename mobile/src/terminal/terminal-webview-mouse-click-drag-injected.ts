@@ -18,6 +18,16 @@
 export const TERMINAL_MOUSE_CLICK_DRAG_JS = `
   var mouseGesture = null;
 
+  // Why: touch taps raise the soft keyboard via the terminal-tap notify, but a
+  // mouse click historically could not (protecting iPad + hardware keyboard,
+  // #12772). Rule: raise it only on Android devices with no hardware keyboard —
+  // Chromium exposes navigator.keyboard only when one is attached, and iPadOS
+  // never matches an Android UA. Read per click so plugging a keyboard in
+  // mid-session takes effect immediately.
+  function shouldMouseTapFocusKeyboard() {
+    return /Android/i.test(navigator.userAgent) && typeof navigator.keyboard === 'undefined';
+  }
+
   // One report per transition, built with the same encoding ladder as
   // buildMouseClickInput: SGR pixels (1016) > SGR (1006) > default. Returns ''
   // when the mode does not report this transition (x10 has no release, only
@@ -180,7 +190,7 @@ export const TERMINAL_MOUSE_CLICK_DRAG_JS = `
       // not also open a link or focus the keyboard underneath.
       if (gesture.dismissedSelection) return;
       // Pointer clicks keep their current link, file, TUI mouse, and focus priority.
-      notifyTerminalSurfaceTap(e.clientX, e.clientY, false);
+      notifyTerminalSurfaceTap(e.clientX, e.clientY, shouldMouseTapFocusKeyboard());
     }, true);
 
     targetSurface.addEventListener('pointercancel', function(e) {
