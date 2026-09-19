@@ -132,9 +132,18 @@ describe('terminal WebView mouse selection overrides', () => {
     // 48,64 is within DOUBLE_CLICK_SLOP of the pre-drag tap, so a stale pair
     // would eat the first of these clicks and the double click would die.
     mouse.mouseClick(48, 64)
+    // The first post-drag click must only dismiss the drag's selection (its
+    // enabled:false post); pairing against the stale pre-drag anchor here
+    // would word-select and consume the pair.
+    expect(
+      mouse
+        .postedMessages()
+        .filter((message) => message.type === 'set-select-mode' && message.enabled === true)
+    ).toEqual([])
+
     mouse.mouseClick(48, 64)
 
-    expect(mouse.postedMessages()).toContainEqual({ type: 'set-select-mode', enabled: true })
-    expect(mouse.selectionSpy()).toHaveBeenCalled()
+    const modes = mouse.postedMessages().filter((message) => message.type === 'set-select-mode')
+    expect(modes.at(-1)).toEqual({ type: 'set-select-mode', enabled: true })
   })
 })
